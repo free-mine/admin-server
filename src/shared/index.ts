@@ -1,3 +1,3 @@
-export { AppError, ensure, publicError } from './errors.js'
-export { amount, minimumAmount, MAX_UINT128, sameAddress } from './amounts.js'
+export { ensure, AppError, publicError } from './errors.js'
 export type { Json, JsonObject, PublicError } from './types.js'
+export { amount, MAX_UINT128, sameAddress, minimumAmount } from './amounts.js'

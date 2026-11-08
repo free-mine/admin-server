@@ -1,4 +1,10 @@
-export { Operations, operationView } from './engine.js'
 export { Journal } from './journal.js'
 export { Previews, previewView } from './previews.js'
-export type { Operation, OperationView, OperationStatus, StepStatus, Preview } from './types.js'
+export { Operations, operationView } from './engine.js'
+export type {
+  Preview,
+  Operation,
+  StepStatus,
+  OperationView,
+  OperationStatus,
+} from './types.js'

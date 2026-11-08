@@ -99,19 +99,19 @@ Docker HEALTHCHECK. `/ready` проверяет также RPC, полномоч
 
 ## Настройки
 
-| Переменная | По умолчанию | Значение |
-|---|---|---|
-| `PRIVATE_KEY` | обязательна | Ключ текущего владельца `OreVein` |
-| `RPC_URL` | обязательна | HTTP(S) RPC Avalanche, в том числе Alchemy |
-| `HOST` | `0.0.0.0` | Адрес внутри контейнера |
-| `PORT` | `3000` | Порт внутри контейнера |
-| `DATA_DIR` | `/app/data` в образе | Каталог журнала |
-| `ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Origin браузерного клиента через запятую |
-| `POLL_INTERVAL_MS` | `3000` | Проверка транзакций, 100–60000 мс |
-| `RPC_TIMEOUT_MS` | `20000` | Тайм-аут одного RPC-запроса, 1000–120000 мс |
-| `PREVIEW_TTL_SECONDS` | `120` | Срок действия плана, 30–600 секунд |
-| `LOG_BLOCK_RANGE` | `2000` | Начальный диапазон чтения событий; уменьшается при отказе RPC |
-| `DEPLOYMENT_BLOCK` | из deployment-транзакции | Необязательный реальный блок развёртывания `OreVein` |
+| Переменная            | По умолчанию                                  | Значение                                                      |
+| --------------------- | --------------------------------------------- | ------------------------------------------------------------- |
+| `PRIVATE_KEY`         | обязательна                                   | Ключ текущего владельца `OreVein`                             |
+| `RPC_URL`             | обязательна                                   | HTTP(S) RPC Avalanche, в том числе Alchemy                    |
+| `HOST`                | `0.0.0.0`                                     | Адрес внутри контейнера                                       |
+| `PORT`                | `3000`                                        | Порт внутри контейнера                                        |
+| `DATA_DIR`            | `/app/data` в образе                          | Каталог журнала                                               |
+| `ALLOWED_ORIGINS`     | `http://localhost:5173,http://127.0.0.1:5173` | Origin браузерного клиента через запятую                      |
+| `POLL_INTERVAL_MS`    | `3000`                                        | Проверка транзакций, 100–60000 мс                             |
+| `RPC_TIMEOUT_MS`      | `20000`                                       | Тайм-аут одного RPC-запроса, 1000–120000 мс                   |
+| `PREVIEW_TTL_SECONDS` | `120`                                         | Срок действия плана, 30–600 секунд                            |
+| `LOG_BLOCK_RANGE`     | `2000`                                        | Начальный диапазон чтения событий; уменьшается при отказе RPC |
+| `DEPLOYMENT_BLOCK`    | из deployment-транзакции                      | Необязательный реальный блок развёртывания `OreVein`          |
 
 Готовый Compose передаёт ключ, RPC и `ALLOWED_ORIGINS`; дополнительные параметры
 добавляются в его `environment`. `docker run --env-file` передаёт все строки файла.
@@ -174,25 +174,25 @@ Invoke-RestMethod "$api/v1/operations/$($operation.id)"
 Ниже указаны `action.kind` и `action.params`. Все поля обязательны, кроме явно
 отмеченных ниже; неизвестные поля отклоняются.
 
-| `kind` | `params` | Назначение |
-|---|---|---|
-| `successor.schedule` | `{"address":"0x…","timestamp":1900000000}` | Назначить или перенести дату строго дальше в будущее |
-| `successor.remove` | `{"address":"0x…"}` | Удалить преемника из расписания |
-| `contract.setURI` | `{"uri":"ipfs://…"}` | Изменить `contractURI` |
-| `fund.closeShift` | `{}` | Закрыть текущую смену |
-| `fund.fundShift` | `{"price":"0.95"}` | Финансировать последнюю закрытую смену |
-| `fund.expireClaim` | `{"shiftId":"1","claimId":"1"}` | Отменить невостребованную заявку после контрактного срока |
-| `fund.updateEntryPrice` | `{"price":"1.01"}` | Изменить цену входа |
-| `fund.changeDollar` | `{"token":"USDC"}` | Выбрать доллар из четырёх разрешённых токенов |
-| `aave.supply` | `{"token":"USDC","amount":"10"}` | Внести вклад |
-| `aave.withdraw` | `{"token":"USDC","amount":"10"}` | Вывести сумму; `"all"` — весь вклад |
-| `aave.borrow` | `{"token":"USDC","amount":"1"}` | Занять по переменной ставке, mode 2 |
-| `aave.repay` | `{"token":"USDC","amount":"1.1"}` | Погасить долг в пределах бюджета; `"all"` не поддерживается |
-| `lfj.swap` | `{"tokenIn":"WAVAX","tokenOut":"USDC","amount":"1","slippageBps":40}` | Обмен exact input |
-| `uniswap.mint` | см. пример | Создать позицию, при необходимости создать/инициализировать пул |
-| `uniswap.increase` | `{"tokenId":"123","amount0":"1","amount1":"25","slippageBps":40}` | Добавить ликвидность в контрактном порядке token0/token1 |
-| `uniswap.collect` | `{"tokenId":"123"}` | Забрать все комиссии и уже причитающиеся токены |
-| `uniswap.close` | `{"tokenId":"123","slippageBps":40}` | Вывести всю ликвидность, собрать токены и сжечь NFT атомарно |
+| `kind`                  | `params`                                                              | Назначение                                                      |
+| ----------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `successor.schedule`    | `{"address":"0x…","timestamp":1900000000}`                            | Назначить или перенести дату строго дальше в будущее            |
+| `successor.remove`      | `{"address":"0x…"}`                                                   | Удалить преемника из расписания                                 |
+| `contract.setURI`       | `{"uri":"ipfs://…"}`                                                  | Изменить `contractURI`                                          |
+| `fund.closeShift`       | `{}`                                                                  | Закрыть текущую смену                                           |
+| `fund.fundShift`        | `{"price":"0.95"}`                                                    | Финансировать последнюю закрытую смену                          |
+| `fund.expireClaim`      | `{"shiftId":"1","claimId":"1"}`                                       | Отменить невостребованную заявку после контрактного срока       |
+| `fund.updateEntryPrice` | `{"price":"1.01"}`                                                    | Изменить цену входа                                             |
+| `fund.changeDollar`     | `{"token":"USDC"}`                                                    | Выбрать доллар из четырёх разрешённых токенов                   |
+| `aave.supply`           | `{"token":"USDC","amount":"10"}`                                      | Внести вклад                                                    |
+| `aave.withdraw`         | `{"token":"USDC","amount":"10"}`                                      | Вывести сумму; `"all"` — весь вклад                             |
+| `aave.borrow`           | `{"token":"USDC","amount":"1"}`                                       | Занять по переменной ставке, mode 2                             |
+| `aave.repay`            | `{"token":"USDC","amount":"1.1"}`                                     | Погасить долг в пределах бюджета; `"all"` не поддерживается     |
+| `lfj.swap`              | `{"tokenIn":"WAVAX","tokenOut":"USDC","amount":"1","slippageBps":40}` | Обмен exact input                                               |
+| `uniswap.mint`          | см. пример                                                            | Создать позицию, при необходимости создать/инициализировать пул |
+| `uniswap.increase`      | `{"tokenId":"123","amount0":"1","amount1":"25","slippageBps":40}`     | Добавить ликвидность в контрактном порядке token0/token1        |
+| `uniswap.collect`       | `{"tokenId":"123"}`                                                   | Забрать все комиссии и уже причитающиеся токены                 |
+| `uniswap.close`         | `{"tokenId":"123","slippageBps":40}`                                  | Вывести всю ликвидность, собрать токены и сжечь NFT атомарно    |
 
 Создание позиции:
 
@@ -201,9 +201,13 @@ Invoke-RestMethod "$api/v1/operations/$($operation.id)"
   "action": {
     "kind": "uniswap.mint",
     "params": {
-      "tokenA": "WAVAX", "tokenB": "USDC",
-      "amountA": "1", "amountB": "25",
-      "fee": 500, "range": "full", "slippageBps": 40
+      "tokenA": "WAVAX",
+      "tokenB": "USDC",
+      "amountA": "1",
+      "amountB": "25",
+      "fee": 500,
+      "range": "full",
+      "slippageBps": 40
     }
   },
   "maxGasAvax": "0.1"
@@ -248,14 +252,14 @@ tokenA/tokenB; они должны быть кратны tick spacing. Сумм�
 Полная проверка финального вызова выполняется после разрешений. При её отказе
 подтверждённые разрешения остаются в сети.
 
-| Статус операции | Значение |
-|---|---|
-| `queued` | Принята и записана в журнал |
-| `running` | Проверяется или подготавливается шаг |
-| `waiting` | Ожидание receipt или доступности RPC |
+| Статус операции   | Значение                                          |
+| ----------------- | ------------------------------------------------- |
+| `queued`          | Принята и записана в журнал                       |
+| `running`         | Проверяется или подготавливается шаг              |
+| `waiting`         | Ожидание receipt или доступности RPC              |
 | `needs_attention` | Конфликт nonce или истёкший неподтверждённый план |
-| `succeeded` | Все шаги подтверждены либо пропущены |
-| `failed` | Работа остановлена; причина в `error.code` |
+| `succeeded`       | Все шаги подтверждены либо пропущены              |
+| `failed`          | Работа остановлена; причина в `error.code`        |
 
 Статусы шага: `pending`, `checking`, `signing`, `broadcasting`, `confirming`,
 `confirmed`, `skipped`, `failed`. При `broadcasting` подпись уже записана в журнал;
@@ -276,33 +280,36 @@ NFT ID в событии `Transfer`. Позиции также доступны 
 отправляются по REST. При подключении приходит до 100 последних операций:
 
 ```json
-{"type":"operations.snapshot","operations":[]}
+{ "type": "operations.snapshot", "operations": [] }
 ```
 
 Изменения приходят полным объектом `operation` той же структуры, что HTTP GET:
 
 ```json
-{"type":"operation.updated","operation":{"id":"…","version":3,"status":"waiting","steps":[]}}
+{
+  "type": "operation.updated",
+  "operation": { "id": "…", "version": 3, "status": "waiting", "steps": [] }
+}
 ```
 
 Выше объект сокращён. Полный объект включает `request`, `summary`, временные
 отметки, бюджет/расход газа и шаги. `version` монотонно растёт для каждой операции.
 
 ```js
-const operations = new Map();
-const socket = new WebSocket('ws://127.0.0.1:3000/v1/ws');
+const operations = new Map()
+const socket = new WebSocket('ws://127.0.0.1:3000/v1/ws')
 function accept(operation) {
-  const previous = operations.get(operation.id);
+  const previous = operations.get(operation.id)
   if (!previous || operation.version > previous.version) {
-    operations.set(operation.id, operation);
+    operations.set(operation.id, operation)
     // Здесь обновляется интерфейс.
   }
 }
 socket.onmessage = ({ data }) => {
-  const event = JSON.parse(data);
-  if (event.type === 'operations.snapshot') event.operations.forEach(accept);
-  if (event.type === 'operation.updated') accept(event.operation);
-};
+  const event = JSON.parse(data)
+  if (event.type === 'operations.snapshot') event.operations.forEach(accept)
+  if (event.type === 'operation.updated') accept(event.operation)
+}
 ```
 
 Клиент переподключается с задержкой и получает новый снимок. Для более старой
@@ -312,20 +319,20 @@ socket.onmessage = ({ data }) => {
 
 ## Чтение данных
 
-| Endpoint | Содержимое |
-|---|---|
-| `GET /health` | Жив ли процесс |
-| `GET /ready` | RPC, полномочия и журнал |
-| `GET /v1/config` | Сеть, адреса и токены без секретов |
-| `GET /v1/balances` | AVAX владельца и OreVein, балансы четырёх ERC20 |
-| `GET /v1/successors` | Расписание, номер и время блока |
-| `GET /v1/fund` | Текущая смена, доллар, цены и допустимые границы |
-| `GET /v1/fund/shifts/:id` | Финансирование смены и сроки отмены заявок |
-| `GET /v1/fund/shifts/:id/claims?offset=0&limit=20` | Открытые заявки в диапазоне ID |
-| `GET /v1/aave` | Залог, долг, health factor, вклады и переменные ставки |
-| `GET /v1/uniswap/positions?offset=0&limit=20` | NFT позиций OreVein |
-| `GET /v1/operations?offset=0&limit=20` | История заказов, новые первыми |
-| `GET /v1/operations/:id` | Состояние одного заказа |
+| Endpoint                                           | Содержимое                                             |
+| -------------------------------------------------- | ------------------------------------------------------ |
+| `GET /health`                                      | Жив ли процесс                                         |
+| `GET /ready`                                       | RPC, полномочия и журнал                               |
+| `GET /v1/config`                                   | Сеть, адреса и токены без секретов                     |
+| `GET /v1/balances`                                 | AVAX владельца и OreVein, балансы четырёх ERC20        |
+| `GET /v1/successors`                               | Расписание, номер и время блока                        |
+| `GET /v1/fund`                                     | Текущая смена, доллар, цены и допустимые границы       |
+| `GET /v1/fund/shifts/:id`                          | Финансирование смены и сроки отмены заявок             |
+| `GET /v1/fund/shifts/:id/claims?offset=0&limit=20` | Открытые заявки в диапазоне ID                         |
+| `GET /v1/aave`                                     | Залог, долг, health factor, вклады и переменные ставки |
+| `GET /v1/uniswap/positions?offset=0&limit=20`      | NFT позиций OreVein                                    |
+| `GET /v1/operations?offset=0&limit=20`             | История заказов, новые первыми                         |
+| `GET /v1/operations/:id`                           | Состояние одного заказа                                |
 
 `limit`: 1–100; `offset`: 0–1000000. Для заявок обходятся ID от `offset + 1`
 до `offset + limit`; закрытые пропускаются, поэтому страница может быть пустой
@@ -402,10 +409,24 @@ raw-транзакции не возвращаются API и не печата�
 
 ```sh
 npm ci
+npm run lint
+npm run format:check
 npm run check
 npm test
 npm run build
 ```
+
+Конфигурация ESLint адаптирована под
+Node.js и проверяет исходники, тесты и служебные скрипты. Порядок полей объектов
+не сортируется, чтобы сохранить порядок вычислений и сериализации. Правила
+`require-await` и устаревшее `no-return-await` не включены: асинхронные обработчики
+Fastify и тестовые реализации сохраняют свой Promise-контракт, а `return await`
+нужен для обработки ошибок внутри `try/catch/finally`.
+
+`npm run lint:fix` исправляет нарушения, поддерживающие автоисправление;
+`npm run format` форматирует код, JSON, YAML и документацию. Проверки `lint`
+и `format:check` файлы не изменяют. Сборка, кеши, данные и файлы окружения
+исключены из форматирования; `package-lock.json` обновляется только через npm.
 
 Для локального запуска установите в `.env` `DATA_DIR=./data`:
 

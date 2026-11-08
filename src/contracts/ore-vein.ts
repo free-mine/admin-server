@@ -1,537 +1,537 @@
 export const oreVeinAbi = [
   {
-    "type": "constructor",
-    "inputs": [
+    type: 'constructor',
+    inputs: [
       {
-        "name": "dollar",
-        "type": "address",
-        "internalType": "address"
+        name: 'dollar',
+        type: 'address',
+        internalType: 'address',
       },
       {
-        "name": "initialOwner",
-        "type": "address",
-        "internalType": "address"
+        name: 'initialOwner',
+        type: 'address',
+        internalType: 'address',
       },
       {
-        "name": "freeMineAddress",
-        "type": "address",
-        "internalType": "address"
+        name: 'freeMineAddress',
+        type: 'address',
+        internalType: 'address',
       },
       {
-        "name": "initialContractURI",
-        "type": "string",
-        "internalType": "string"
-      }
+        name: 'initialContractURI',
+        type: 'string',
+        internalType: 'string',
+      },
     ],
-    "stateMutability": "nonpayable"
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "AdminNotFound",
-    "type": "error",
-    "inputs": []
+    name: 'AdminNotFound',
+    type: 'error',
+    inputs: [],
   },
   {
-    "name": "AlreadyInCrew",
-    "type": "error",
-    "inputs": []
+    name: 'AlreadyInCrew',
+    type: 'error',
+    inputs: [],
   },
   {
-    "name": "CallFailed",
-    "type": "error",
-    "inputs": [
+    name: 'CallFailed',
+    type: 'error',
+    inputs: [
       {
-        "name": "reason",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ]
+        name: 'reason',
+        type: 'bytes',
+        internalType: 'bytes',
+      },
+    ],
   },
   {
-    "name": "InvalidTarget",
-    "type": "error",
-    "inputs": []
+    name: 'InvalidTarget',
+    type: 'error',
+    inputs: [],
   },
   {
-    "name": "InvalidTimestamp",
-    "type": "error",
-    "inputs": []
+    name: 'InvalidTimestamp',
+    type: 'error',
+    inputs: [],
   },
   {
-    "name": "NotYet",
-    "type": "error",
-    "inputs": []
+    name: 'NotYet',
+    type: 'error',
+    inputs: [],
   },
   {
-    "name": "OwnableInvalidOwner",
-    "type": "error",
-    "inputs": [
+    name: 'OwnableInvalidOwner',
+    type: 'error',
+    inputs: [
       {
-        "name": "owner",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
+        name: 'owner',
+        type: 'address',
+        internalType: 'address',
+      },
+    ],
   },
   {
-    "name": "OwnableUnauthorizedAccount",
-    "type": "error",
-    "inputs": [
+    name: 'OwnableUnauthorizedAccount',
+    type: 'error',
+    inputs: [
       {
-        "name": "account",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
+        name: 'account',
+        type: 'address',
+        internalType: 'address',
+      },
+    ],
   },
   {
-    "name": "SafeERC20FailedOperation",
-    "type": "error",
-    "inputs": [
+    name: 'SafeERC20FailedOperation',
+    type: 'error',
+    inputs: [
       {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
+        name: 'token',
+        type: 'address',
+        internalType: 'address',
+      },
+    ],
   },
   {
-    "name": "SenderIsNotInCrew",
-    "type": "error",
-    "inputs": []
+    name: 'SenderIsNotInCrew',
+    type: 'error',
+    inputs: [],
   },
   {
-    "name": "SuccessorNotFound",
-    "type": "error",
-    "inputs": []
+    name: 'SuccessorNotFound',
+    type: 'error',
+    inputs: [],
   },
   {
-    "name": "AdminActivated",
-    "type": "event",
-    "inputs": [
+    name: 'AdminActivated',
+    type: 'event',
+    inputs: [
       {
-        "name": "admin",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        name: 'admin',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
       },
       {
-        "name": "claimableAt",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
+        name: 'claimableAt',
+        type: 'uint256',
+        indexed: false,
+        internalType: 'uint256',
+      },
     ],
-    "anonymous": false
+    anonymous: false,
   },
   {
-    "name": "AdminRemoved",
-    "type": "event",
-    "inputs": [
+    name: 'AdminRemoved',
+    type: 'event',
+    inputs: [
       {
-        "name": "admin",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
+        name: 'admin',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
+      },
     ],
-    "anonymous": false
+    anonymous: false,
   },
   {
-    "name": "ContractURIUpdated",
-    "type": "event",
-    "inputs": [],
-    "anonymous": false
+    name: 'ContractURIUpdated',
+    type: 'event',
+    inputs: [],
+    anonymous: false,
   },
   {
-    "name": "Executed",
-    "type": "event",
-    "inputs": [
+    name: 'Executed',
+    type: 'event',
+    inputs: [
       {
-        "name": "target",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
+        name: 'target',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
+      },
     ],
-    "anonymous": false
+    anonymous: false,
   },
   {
-    "name": "OwnershipTransferStarted",
-    "type": "event",
-    "inputs": [
+    name: 'OwnershipTransferStarted',
+    type: 'event',
+    inputs: [
       {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        name: 'previousOwner',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
       },
       {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
+        name: 'newOwner',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
+      },
     ],
-    "anonymous": false
+    anonymous: false,
   },
   {
-    "name": "OwnershipTransferred",
-    "type": "event",
-    "inputs": [
+    name: 'OwnershipTransferred',
+    type: 'event',
+    inputs: [
       {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        name: 'previousOwner',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
       },
       {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
+        name: 'newOwner',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
+      },
     ],
-    "anonymous": false
+    anonymous: false,
   },
   {
-    "name": "SuccessorRemoved",
-    "type": "event",
-    "inputs": [
+    name: 'SuccessorRemoved',
+    type: 'event',
+    inputs: [
       {
-        "name": "successor",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        name: 'successor',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
       },
       {
-        "name": "claimableAt",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
+        name: 'claimableAt',
+        type: 'uint256',
+        indexed: false,
+        internalType: 'uint256',
       },
       {
-        "name": "removedBy",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
+        name: 'removedBy',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
+      },
     ],
-    "anonymous": false
+    anonymous: false,
   },
   {
-    "name": "SuccessorScheduled",
-    "type": "event",
-    "inputs": [
+    name: 'SuccessorScheduled',
+    type: 'event',
+    inputs: [
       {
-        "name": "successor",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        name: 'successor',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
       },
       {
-        "name": "previousClaimableAt",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
+        name: 'previousClaimableAt',
+        type: 'uint256',
+        indexed: false,
+        internalType: 'uint256',
       },
       {
-        "name": "claimableAt",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
+        name: 'claimableAt',
+        type: 'uint256',
+        indexed: false,
+        internalType: 'uint256',
       },
       {
-        "name": "scheduledBy",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
+        name: 'scheduledBy',
+        type: 'address',
+        indexed: true,
+        internalType: 'address',
+      },
     ],
-    "anonymous": false
+    anonymous: false,
   },
   {
-    "name": "acceptOwnership",
-    "type": "function",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    name: 'acceptOwnership',
+    type: 'function',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "admins",
-    "type": "function",
-    "inputs": [
+    name: 'admins',
+    type: 'function',
+    inputs: [
       {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: '',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "outputs": [
+    outputs: [
       {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
-      }
+        name: '',
+        type: 'bool',
+        internalType: 'bool',
+      },
     ],
-    "stateMutability": "view"
+    stateMutability: 'view',
   },
   {
-    "name": "changeDollar",
-    "type": "function",
-    "inputs": [
+    name: 'changeDollar',
+    type: 'function',
+    inputs: [
       {
-        "name": "newDollar",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: 'newDollar',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "claimPrivileges",
-    "type": "function",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    name: 'claimPrivileges',
+    type: 'function',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "closeShift",
-    "type": "function",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    name: 'closeShift',
+    type: 'function',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "contractURI",
-    "type": "function",
-    "inputs": [],
-    "outputs": [
+    name: 'contractURI',
+    type: 'function',
+    inputs: [],
+    outputs: [
       {
-        "name": "",
-        "type": "string",
-        "internalType": "string"
-      }
+        name: '',
+        type: 'string',
+        internalType: 'string',
+      },
     ],
-    "stateMutability": "view"
+    stateMutability: 'view',
   },
   {
-    "name": "execute",
-    "type": "function",
-    "inputs": [
+    name: 'execute',
+    type: 'function',
+    inputs: [
       {
-        "name": "target",
-        "type": "address",
-        "internalType": "address"
+        name: 'target',
+        type: 'address',
+        internalType: 'address',
       },
       {
-        "name": "value",
-        "type": "uint256",
-        "internalType": "uint256"
+        name: 'value',
+        type: 'uint256',
+        internalType: 'uint256',
       },
       {
-        "name": "data",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
+        name: 'data',
+        type: 'bytes',
+        internalType: 'bytes',
+      },
     ],
-    "outputs": [
+    outputs: [
       {
-        "name": "",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
+        name: '',
+        type: 'bytes',
+        internalType: 'bytes',
+      },
     ],
-    "stateMutability": "nonpayable"
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "expireClaim",
-    "type": "function",
-    "inputs": [
+    name: 'expireClaim',
+    type: 'function',
+    inputs: [
       {
-        "name": "shiftId",
-        "type": "uint256",
-        "internalType": "uint256"
+        name: 'shiftId',
+        type: 'uint256',
+        internalType: 'uint256',
       },
       {
-        "name": "claimId",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
+        name: 'claimId',
+        type: 'uint256',
+        internalType: 'uint256',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "freeMine",
-    "type": "function",
-    "inputs": [],
-    "outputs": [
+    name: 'freeMine',
+    type: 'function',
+    inputs: [],
+    outputs: [
       {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IFreeMine"
-      }
+        name: '',
+        type: 'address',
+        internalType: 'contract IFreeMine',
+      },
     ],
-    "stateMutability": "view"
+    stateMutability: 'view',
   },
   {
-    "name": "fundShift",
-    "type": "function",
-    "inputs": [
+    name: 'fundShift',
+    type: 'function',
+    inputs: [
       {
-        "name": "price",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
+        name: 'price',
+        type: 'uint256',
+        internalType: 'uint256',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "owner",
-    "type": "function",
-    "inputs": [],
-    "outputs": [
+    name: 'owner',
+    type: 'function',
+    inputs: [],
+    outputs: [
       {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: '',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "stateMutability": "view"
+    stateMutability: 'view',
   },
   {
-    "name": "pendingOwner",
-    "type": "function",
-    "inputs": [],
-    "outputs": [
+    name: 'pendingOwner',
+    type: 'function',
+    inputs: [],
+    outputs: [
       {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: '',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "stateMutability": "view"
+    stateMutability: 'view',
   },
   {
-    "name": "removeAdmin",
-    "type": "function",
-    "inputs": [
+    name: 'removeAdmin',
+    type: 'function',
+    inputs: [
       {
-        "name": "admin",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: 'admin',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "removeSuccessor",
-    "type": "function",
-    "inputs": [
+    name: 'removeSuccessor',
+    type: 'function',
+    inputs: [
       {
-        "name": "successor",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: 'successor',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "renounceOwnership",
-    "type": "function",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    name: 'renounceOwnership',
+    type: 'function',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "renouncePrivileges",
-    "type": "function",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    name: 'renouncePrivileges',
+    type: 'function',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "scheduleSuccessor",
-    "type": "function",
-    "inputs": [
+    name: 'scheduleSuccessor',
+    type: 'function',
+    inputs: [
       {
-        "name": "successor",
-        "type": "address",
-        "internalType": "address"
+        name: 'successor',
+        type: 'address',
+        internalType: 'address',
       },
       {
-        "name": "timestamp",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
+        name: 'timestamp',
+        type: 'uint256',
+        internalType: 'uint256',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "setContractURI",
-    "type": "function",
-    "inputs": [
+    name: 'setContractURI',
+    type: 'function',
+    inputs: [
       {
-        "name": "newContractURI",
-        "type": "string",
-        "internalType": "string"
-      }
+        name: 'newContractURI',
+        type: 'string',
+        internalType: 'string',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "successors",
-    "type": "function",
-    "inputs": [
+    name: 'successors',
+    type: 'function',
+    inputs: [
       {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: '',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "outputs": [
+    outputs: [
       {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
+        name: '',
+        type: 'uint256',
+        internalType: 'uint256',
+      },
     ],
-    "stateMutability": "view"
+    stateMutability: 'view',
   },
   {
-    "name": "transferOwnership",
-    "type": "function",
-    "inputs": [
+    name: 'transferOwnership',
+    type: 'function',
+    inputs: [
       {
-        "name": "newOwner",
-        "type": "address",
-        "internalType": "address"
-      }
+        name: 'newOwner',
+        type: 'address',
+        internalType: 'address',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "name": "updateEntryPrice",
-    "type": "function",
-    "inputs": [
+    name: 'updateEntryPrice',
+    type: 'function',
+    inputs: [
       {
-        "name": "newPrice",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
+        name: 'newPrice',
+        type: 'uint256',
+        internalType: 'uint256',
+      },
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
-    "type": "receive",
-    "stateMutability": "payable"
-  }
+    type: 'receive',
+    stateMutability: 'payable',
+  },
 ]

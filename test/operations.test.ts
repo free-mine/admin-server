@@ -1,24 +1,36 @@
+import test from 'node:test'
+import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import test from 'node:test'
-import { Journal, Operations } from '../src/operations/index.js'
+
 import { AppError } from '../src/shared/index.js'
-import { engine, FakeChain, preview, until } from './helpers.js'
+import { until, engine, preview } from './helpers.js'
+import { Journal, Operations } from '../src/operations/index.js'
 
 test('one order executes reset, approval and action sequentially; signatures are private', async t => {
   const { chain, directory, operations } = engine(t)
   chain.allowanceValue = 1n
   chain.onBroadcast = () => {
-    const saved = JSON.parse(readFileSync(join(directory, 'operations.json'), 'utf8'))
-    assert.ok(saved.operations[0].steps.some((step: { signed?: unknown }) => step.signed))
+    const saved = JSON.parse(
+      readFileSync(join(directory, 'operations.json'), 'utf8'),
+    )
+    assert.ok(
+      saved.operations[0].steps.some(
+        (step: { signed?: unknown }) => step.signed,
+      ),
+    )
   }
   const operation = operations.submit(preview(true), randomUUID())
   await until(() => operations.get(operation.id).status === 'succeeded')
-  assert.deepEqual(chain.broadcasts.map(raw => chain.signedCalls.get(raw)?.data), ['reset', 'approve', 'main'])
+  assert.deepEqual(
+    chain.broadcasts.map(raw => chain.signedCalls.get(raw)?.data),
+    ['reset', 'approve', 'main'],
+  )
   assert.equal(operations.get(operation.id).gasSpentWei, '15')
-  assert.ok(!JSON.stringify(operations.get(operation.id)).includes('signed-secret'))
+  assert.ok(
+    !JSON.stringify(operations.get(operation.id)).includes('signed-secret'),
+  )
 })
 
 test('sufficient allowances skip both optional transactions', async t => {
@@ -27,7 +39,10 @@ test('sufficient allowances skip both optional transactions', async t => {
   const operation = operations.submit(preview(true), randomUUID())
   await until(() => operations.get(operation.id).status === 'succeeded')
   assert.equal(chain.signs.length, 1)
-  assert.deepEqual(operations.get(operation.id).steps.map(step => step.status), ['skipped', 'skipped', 'confirmed'])
+  assert.deepEqual(
+    operations.get(operation.id).steps.map(step => step.status),
+    ['skipped', 'skipped', 'confirmed'],
+  )
 })
 
 test('lost broadcast response is resolved by receipt without a second action', async t => {
@@ -46,7 +61,11 @@ test('restart recovers an unmined signature, preserving nonce and hash', async t
   await until(() => operations.get(operation.id).status === 'waiting')
   await operations.stop()
   chain.shouldMine = true
-  const recovered = new Operations(new Journal(directory, chain.owner), chain, 5)
+  const recovered = new Operations(
+    new Journal(directory, chain.owner),
+    chain,
+    5,
+  )
   t.after(() => recovered.stop())
   recovered.start()
   await until(() => recovered.get(operation.id).status === 'succeeded')
@@ -63,7 +82,11 @@ test('mined transaction survives restart after lost local confirmation', async t
   chain.shouldMine = true
   await chain.broadcast(chain.signs[0].raw)
   const count = chain.broadcasts.length
-  const recovered = new Operations(new Journal(directory, chain.owner), chain, 5)
+  const recovered = new Operations(
+    new Journal(directory, chain.owner),
+    chain,
+    5,
+  )
   t.after(() => recovered.stop())
   recovered.start()
   await until(() => recovered.get(operation.id).status === 'succeeded')
@@ -73,15 +96,26 @@ test('mined transaction survives restart after lost local confirmation', async t
 
 test('idempotency survives a restart and rejects conflicting input', async t => {
   const { chain, directory, operations } = engine(t)
-  const plan = preview(), requestId = randomUUID()
+  const plan = preview(),
+    requestId = randomUUID()
   const operation = operations.submit(plan, requestId)
   assert.equal(operations.submit(plan, requestId).id, operation.id)
-  assert.throws(() => operations.submit(plan, randomUUID()), /PREVIEW_ALREADY_SUBMITTED/)
+  assert.throws(
+    () => operations.submit(plan, randomUUID()),
+    /PREVIEW_ALREADY_SUBMITTED/,
+  )
   await until(() => operations.get(operation.id).status === 'succeeded')
   await operations.stop()
-  const recovered = new Operations(new Journal(directory, chain.owner), chain, 5)
+  const recovered = new Operations(
+    new Journal(directory, chain.owner),
+    chain,
+    5,
+  )
   assert.equal(recovered.existing(requestId, plan.id)?.id, operation.id)
-  assert.throws(() => recovered.existing(requestId, randomUUID()), /IDEMPOTENCY_CONFLICT/)
+  assert.throws(
+    () => recovered.existing(requestId, randomUUID()),
+    /IDEMPOTENCY_CONFLICT/,
+  )
   assert.equal(chain.signs.length, 1)
 })
 
@@ -89,7 +123,9 @@ test('storage failure before broadcast stops the worker', async t => {
   const { chain, operations } = engine(t)
   const save = operations.journal.save.bind(operations.journal)
   operations.journal.save = value => {
-    if (value.steps.some(step => step.signed)) throw new AppError('JOURNAL_WRITE_FAILED')
+    if (value.steps.some(step => step.signed)) {
+      throw new AppError('JOURNAL_WRITE_FAILED')
+    }
     save(value)
   }
   operations.submit(preview(), randomUUID())
@@ -102,7 +138,9 @@ test('expired pending signatures are never rebroadcast; queue waits for resoluti
   chain.shouldMine = false
   const first = operations.submit(preview(), randomUUID())
   await until(() => operations.get(first.id).status === 'waiting')
-  operations.journal.get(first.id)!.expiresAt = Date.now() - 1
+  const pending = operations.journal.get(first.id)
+  assert.ok(pending)
+  pending.expiresAt = Date.now() - 1
   await until(() => operations.get(first.id).status === 'needs_attention')
   const second = operations.submit(preview(), randomUUID())
   assert.equal(chain.signs.length, 1)
@@ -128,5 +166,8 @@ test('main transaction revert stops remaining steps and records spent gas', asyn
 
 test('journal from another owner is refused', async t => {
   const { directory } = engine(t)
-  assert.throws(() => new Journal(directory, '0x0000000000000000000000000000000000000002'), /JOURNAL_OWNER_MISMATCH/)
+  assert.throws(
+    () => new Journal(directory, '0x0000000000000000000000000000000000000002'),
+    /JOURNAL_OWNER_MISMATCH/,
+  )
 })

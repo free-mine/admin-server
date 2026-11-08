@@ -5,7 +5,10 @@ module.exports = {
       chainId: 43114,
       hardfork: 'cancun',
       chains: { 43114: { hardforkHistory: { cancun: 0 } } },
-      forking: { url: process.env.FORK_RPC_URL || 'https://api.avax.network/ext/bc/C/rpc' },
+      forking: {
+        url:
+          process.env.FORK_RPC_URL || 'https://api.avax.network/ext/bc/C/rpc',
+      },
       accounts: [],
       loggingEnabled: false,
     },
