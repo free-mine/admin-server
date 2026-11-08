@@ -1,0 +1,2011 @@
+openapi: 3.0.3
+info:
+  title: OreVein Admin Server API
+  version: 1.0.0
+  description: |
+    Локальный backend панели владельца Free Mine в Avalanche C-Chain (chainId 43114).
+    Капитал и NFT позиций находятся у OreVein; транзакции подписывает владелец, он же оплачивает газ.
+    Поддерживаются только WAVAX, USDT, USDC и BTC.b из публичной конфигурации.
+
+    ### Порядок работы
+    1. Создайте план через POST /v1/previews с action и общим maxGasAvax.
+    2. Покажите пользователю request, summary, steps, expiresAt и оценку газа.
+    3. После подтверждения отправьте previewId и новый UUID requestId в POST /v1/operations.
+    4. Следите за статусом через REST или WebSocket /v1/ws. Отключение клиента не отменяет исполнение.
+
+    ### Форматы и ограничения
+    Суммы и цены в запросах — десятичные строки в человеческих единицах, например "10.5".
+    Экспоненты, запятые и отрицательные значения запрещены. В ответах суммы ERC20, цены и газ в wei
+    представлены целыми строками. Исключения: ownerAvax, oreVeinAvax и knownGasEstimateAvax уже выражены в AVAX.
+    Decimals токенов доступны в GET /v1/config; цены FreeMine всегда имеют 18 decimals.
+    ID смен, заявок и NFT — положительные целые строки; ID планов, заказов и requestId — UUID.
+    expiresAt, createdAt, updatedAt — Unix milliseconds; контрактные времена — Unix seconds.
+    Неизвестные поля в телах запросов отклоняются. Максимальный размер тела — 32768 байт.
+
+    ### Газ и исполнение
+    Очередь исполняется последовательно. Шаги ALLOWANCE_RESET и ALLOWANCE_APPROVE условны:
+    достаточный allowance приводит к skipped. Перед отправкой вызов симулируется, gas limit получает запас 20%.
+    Фактический расход предыдущих шагов плюс максимальная стоимость следующего не могут превысить maxGasAvax.
+    Если gasEstimateComplete равен false, knownGasEstimateAvax — только известная часть оценки;
+    requires_prior_steps означает, что полная симуляция возможна после предыдущих шагов.
+    После expiresAt новые шаги не подписываются; отправленные транзакции продолжают отслеживаться.
+    Изменение согласованного состояния приводит к PLAN_CHANGED. Ошибка не откатывает предыдущие транзакции
+    и не отзывает выданные разрешения; проверяйте steps и receipts. Общей отмены операции нет.
+
+    ### Доступ и запуск
+    Авторизации нет; сервер рассчитан на локальное защищённое устройство и один экземпляр на кошелёк.
+    Нужны RPC_URL Avalanche и PRIVATE_KEY текущего владельца OreVein, остальные настройки описаны
+    в [environment.ts](https://github.com/free-mine/admin-server/blob/main/src/config/environment.ts).
+    Сохраняйте /app/data в постоянном volume. Контейнер работает от пользователя node (UID 1000).
+    Для запросов из этой страницы добавьте https://free-mine.github.io в ALLOWED_ORIGINS
+    и задайте адрес API в Servers. Origin задаётся без завершающего / и без пути.
+    Проверка Origin не является авторизацией; запросы без Origin разрешены.
+    Браузер должен разрешать соединение с адресом API; HTTPS-странице может понадобиться HTTPS endpoint.
+    OPTIONS возвращает 204 для разрешённого Origin; HTTP-ответы имеют Cache-Control: no-store.
+
+    ### Восстановление и ошибки
+    DATA_DIR/operations.json хранит заказы, подписи и receipts. После перезапуска с прежним volume и ключом
+    сервер проверяет receipts, при необходимости повторно отправляет ту же подпись с тем же nonce и хэшем.
+    Preview до подтверждения хранится только в памяти. needs_attention означает конфликт nonce или
+    истёкшую неподтверждённую транзакцию; исходный receipt продолжает отслеживаться.
+    Для уже подтверждённой внешней замены используйте POST /v1/operations/{id}/resolve.
+    Ошибка записи журнала останавливает исполнителя, /ready возвращает 503.
+    Ошибки REST имеют вид {"error":{"code":"PLAN_EXPIRED"}}; возможны reason и fields.
+    Прикладные ошибки обычно возвращают 400, конфликты идемпотентности — 409,
+    отсутствующий заказ при GET — 404, запрещённый Origin — 403, ошибки RPC/сервера — 500.
+    Частые коды: INVALID_REQUEST, PREVIEW_NOT_FOUND, PREVIEW_EXPIRED, PLAN_EXPIRED, PLAN_CHANGED,
+    GAS_BUDGET_EXCEEDED, INSUFFICIENT_TOKEN_BALANCE, INSUFFICIENT_GAS_BALANCE, CONTRACT_REVERT,
+    TRANSACTION_REVERTED, OWNER_MISMATCH, WRONG_NETWORK, SERVICE_NOT_READY, QUEUE_FULL.
+    Коды локализуются клиентом. RPC URL, ключ и подписанные raw-транзакции не возвращаются API.
+servers:
+  - url: '{baseUrl}'
+    description: Адрес вашего экземпляра API
+    variables:
+      baseUrl:
+        default: http://127.0.0.1:3000
+        description: Полный URL API без завершающего /; это не адрес GitHub Pages.
+tags:
+  - name: Состояние
+    description: Готовность, конфигурация и балансы.
+  - name: Преемники
+    description: Расписание получения прав администратора.
+  - name: Фонд
+    description: 'FreeMine: смены, цены и заявки.'
+  - name: Протоколы
+    description: Чтение Aave и Uniswap; действия LFJ и других протоколов оформляются через previews.
+  - name: Операции
+    description: Подготовка, подтверждение, отслеживание и восстановление заказов.
+  - name: WebSocket
+    description: События операций. Формат сообщений представлен в Schemas.
+paths:
+  /health:
+    get:
+      tags:
+        - Состояние
+      operationId: getHealth
+      summary: Проверить HTTP-процесс
+      description: Не обращается к RPC. Используется Docker HEALTHCHECK.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /ready:
+    get:
+      tags:
+        - Состояние
+      operationId: getReadiness
+      summary: Проверить готовность сервера
+      description: Проверяет сеть, владельца OreVein, связь с FreeMine и состояние журнала.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ready
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: RPC, полномочия или журнал недоступны.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - error
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - unavailable
+                  error:
+                    $ref: '#/components/schemas/PublicError'
+              example:
+                status: unavailable
+                error:
+                  code: JOURNAL_UNAVAILABLE
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/config:
+    get:
+      tags:
+        - Состояние
+      operationId: getConfig
+      summary: Прочитать публичную конфигурацию
+      description: Сеть, адрес владельца, контракты, токены и TTL. Приватный ключ и RPC URL не возвращаются.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/balances:
+    get:
+      tags:
+        - Состояние
+      operationId: getBalances
+      summary: Прочитать балансы владельца и OreVein
+      description: ownerAvax и oreVeinAvax — десятичные строки в AVAX. tokens[].balance — целые строки в минимальных единицах ERC20 у OreVein.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balances'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/successors:
+    get:
+      tags:
+        - Преемники
+      operationId: getSuccessors
+      summary: Прочитать расписание преемников
+      description: Адреса собираются из событий SuccessorScheduled с блока развёртывания, затем значения проверяются на одном блоке. Нулевые записи отбрасываются; порядок — по timestamp. Первый запрос может быть долгим. Недоступная история RPC возвращает ошибку, а не пустой список. eligible означает право вызвать claimPrivileges, но не автоматическое получение полномочий. Активация через API не поддерживается.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Successors'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/fund:
+    get:
+      tags:
+        - Фонд
+      operationId: getFund
+      summary: Прочитать состояние FreeMine и OreVein
+      description: Цены имеют 18 decimals. Ответ содержит текущую смену, допустимые границы цен и время следующего обновления.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fund'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/fund/shifts/{id}:
+    get:
+      tags:
+        - Фонд
+      operationId: getShift
+      summary: Прочитать смену
+      description: id не может превышать currentShiftId. Несуществующая смена возвращает HTTP 400 с SHIFT_NOT_FOUND.
+      parameters:
+        - $ref: '#/components/parameters/ShiftId'
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shift'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/fund/shifts/{id}/claims:
+    get:
+      tags:
+        - Фонд
+      operationId: getClaims
+      summary: Прочитать открытые заявки в диапазоне ID
+      description: Обходятся ID от offset + 1 до offset + limit включительно. Закрытые заявки пропускаются, поэтому страница может быть пустой до конца totalIds. offset относится к диапазону ID, а не к числу открытых заявок.
+      parameters:
+        - $ref: '#/components/parameters/ShiftId'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/aave:
+    get:
+      tags:
+        - Протоколы
+      operationId: getAave
+      summary: Прочитать позиции Aave
+      description: Поля с суффиксом Base имеют 8 decimals; healthFactor — 18, ставки Ray — 27. ltv и currentLiquidationThreshold — базисные пункты. supplied и variableDebt используют decimals токена. При отсутствии долга healthFactor равен null.
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Aave'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/uniswap/positions:
+    get:
+      tags:
+        - Протоколы
+      operationId: getPositions
+      summary: Прочитать NFT позиций OreVein в Uniswap V3
+      description: Если отдельную позицию прочитать не удалось, её элемент содержит tokenId и error вместо данных позиции.
+      parameters:
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/operations:
+    get:
+      tags:
+        - Операции
+      operationId: listOperations
+      summary: Прочитать историю заказов
+      description: Новые операции первыми. Статусы отражают состояние записанного журнала.
+      parameters:
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags:
+        - Операции
+      operationId: submitOperation
+      summary: Подтвердить и поставить план в очередь
+      description: Новый заказ возвращает 202. Повтор той же пары requestId/previewId возвращает существующий заказ с 200, в том числе после перезапуска и истечения preview. Другой previewId с прежним requestId даёт IDEMPOTENCY_CONFLICT; повтор previewId с новым requestId — PREVIEW_ALREADY_SUBMITTED (409). При потере HTTP-ответа повторяйте исходную пару UUID. Отключение клиента не отменяет работу; операции выполняются последовательно.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitRequest'
+      responses:
+        '200':
+          description: Заказ с этой парой UUID уже существует.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '202':
+          description: Заказ записан в журнал и поставлен в очередь.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/operations/{id}:
+    get:
+      tags:
+        - Операции
+      operationId: getOperation
+      summary: Прочитать состояние заказа
+      parameters:
+        - $ref: '#/components/parameters/OperationId'
+      responses:
+        '200':
+          description: Успешный ответ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/OperationNotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/previews:
+    post:
+      tags:
+        - Операции
+      operationId: createPreview
+      summary: Подготовить план операции
+      description: 'Ничего не подписывает и не отправляет в сеть. Выберите action.kind и заполните соответствующие params; неизвестные поля отклоняются. План фиксирует ограничения, шаги, бюджет газа и expiresAt. При gasEstimateComplete: false часть оценок недоступна до выполнения предыдущих шагов. Preview хранится в памяти, действует до expiresAt и теряется при перезапуске. Сначала покажите пользователю request, summary, steps и оценки; после подтверждения отправьте previewId в POST /v1/operations.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewRequest'
+            examples:
+              SuccessorSchedule:
+                summary: Назначить преемника
+                value:
+                  action:
+                    kind: successor.schedule
+                    params:
+                      address: '0x1111111111111111111111111111111111111111'
+                      timestamp: 2000000000
+                  maxGasAvax: '0.05'
+              SuccessorRemove:
+                summary: Удалить расписание преемника
+                value:
+                  action:
+                    kind: successor.remove
+                    params:
+                      address: '0x1111111111111111111111111111111111111111'
+                  maxGasAvax: '0.05'
+              ContractSetURI:
+                summary: Изменить contractURI OreVein
+                value:
+                  action:
+                    kind: contract.setURI
+                    params:
+                      uri: ipfs://metadata
+                  maxGasAvax: '0.05'
+              FundCloseShift:
+                summary: Закрыть текущую смену
+                value:
+                  action:
+                    kind: fund.closeShift
+                    params: {}
+                  maxGasAvax: '0.05'
+              FundFundShift:
+                summary: Профинансировать последнюю закрытую смену по цене выхода; price задаётся в человеческих единицах с точностью 18 decimals.
+                value:
+                  action:
+                    kind: fund.fundShift
+                    params:
+                      price: '0.95'
+                  maxGasAvax: '0.05'
+              FundExpireClaim:
+                summary: Закрыть просроченную заявку смены
+                value:
+                  action:
+                    kind: fund.expireClaim
+                    params:
+                      shiftId: '1'
+                      claimId: '1'
+                  maxGasAvax: '0.05'
+              FundUpdateEntryPrice:
+                summary: Обновить цену входа. Допустимые границы и время следующего обновления доступны в GET /v1/fund.
+                value:
+                  action:
+                    kind: fund.updateEntryPrice
+                    params:
+                      price: '1.02'
+                  maxGasAvax: '0.05'
+              FundChangeDollar:
+                summary: Изменить расчётный токен FreeMine
+                value:
+                  action:
+                    kind: fund.changeDollar
+                    params:
+                      token: USDC
+                  maxGasAvax: '0.05'
+              AaveSupply:
+                summary: Внести токены OreVein в Aave
+                value:
+                  action:
+                    kind: aave.supply
+                    params:
+                      token: USDC
+                      amount: '10'
+                  maxGasAvax: '0.05'
+              AaveBorrow:
+                summary: Занять токены по переменной ставке; получатель — OreVein
+                value:
+                  action:
+                    kind: aave.borrow
+                    params:
+                      token: USDC
+                      amount: '10'
+                  maxGasAvax: '0.05'
+              AaveRepay:
+                summary: Погасить долг по переменной ставке заданной суммой
+                value:
+                  action:
+                    kind: aave.repay
+                    params:
+                      token: USDC
+                      amount: '10'
+                  maxGasAvax: '0.05'
+              AaveWithdraw:
+                summary: 'Вывести указанную сумму или весь вклад через amount: all'
+                value:
+                  action:
+                    kind: aave.withdraw
+                    params:
+                      token: USDC
+                      amount: all
+                  maxGasAvax: '0.05'
+              LfjSwap:
+                summary: Обмен exact input через LFJ. tokenIn и tokenOut различаются; маршрут строится через поддерживаемые токены, минимальный выход фиксируется в плане.
+                value:
+                  action:
+                    kind: lfj.swap
+                    params:
+                      tokenIn: WAVAX
+                      tokenOut: USDC
+                      amount: '1'
+                      slippageBps: 40
+                  maxGasAvax: '0.05'
+              UniswapMint:
+                summary: 'Создать позицию, при необходимости создать и инициализировать пул. tokenA и tokenB различаются. Суммы — верхние бюджеты; одна из сумм может быть нулевой для односторонней позиции. Для range: custom обязательны оба tick, кратные tick spacing; tickLower < tickUpper. Ticks относятся к порядку token0/token1 после сортировки адресов.'
+                value:
+                  action:
+                    kind: uniswap.mint
+                    params:
+                      tokenA: WAVAX
+                      tokenB: USDC
+                      amountA: '1'
+                      amountB: '25'
+                      fee: 500
+                      range: full
+                      slippageBps: 40
+                  maxGasAvax: '0.05'
+              UniswapIncrease:
+                summary: Добавить ликвидность в позицию OreVein. amount0 и amount1 — верхние бюджеты в контрактном порядке token0/token1; допускается нулевая сумма одного токена.
+                value:
+                  action:
+                    kind: uniswap.increase
+                    params:
+                      tokenId: '123'
+                      amount0: '1'
+                      amount1: '25'
+                      slippageBps: 40
+                  maxGasAvax: '0.05'
+              UniswapCollect:
+                summary: Забрать все комиссии и причитающиеся токены позиции OreVein
+                value:
+                  action:
+                    kind: uniswap.collect
+                    params:
+                      tokenId: '123'
+                  maxGasAvax: '0.05'
+              UniswapClose:
+                summary: Атомарно вывести всю ликвидность, собрать токены и сжечь NFT позиции OreVein. Общий пул остаётся; частичный вывод не поддерживается.
+                value:
+                  action:
+                    kind: uniswap.close
+                    params:
+                      tokenId: '123'
+                      slippageBps: 40
+                  maxGasAvax: '0.05'
+      responses:
+        '201':
+          description: План подготовлен.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Preview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/operations/{id}/resolve:
+    post:
+      tags:
+        - Операции
+      operationId: resolveOperation
+      summary: Принять подтверждённую замену транзакции
+      description: Передайте хэш уже подтверждённой внешней замены/отмены для незавершённой операции с подписанным шагом. Сервер проверяет владельца и nonce. Если получатель, calldata и value совпадают, принимается receipt замены; иначе заказ завершается с TRANSACTION_REPLACED, дальнейшие шаги не исполняются, очередь освобождается. Endpoint сам не подписывает замену и не повышает комиссию. Неподходящее состояние операции или транзакции возвращает HTTP 400.
+      parameters:
+        - $ref: '#/components/parameters/OperationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveRequest'
+      responses:
+        '200':
+          description: Состояние заказа после обработки замены.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/ws:
+    get:
+      tags:
+        - WebSocket
+      operationId: subscribeOperations
+      summary: Подписаться на состояния операций
+      description: 'Подключайтесь WebSocket-клиентом к ws://127.0.0.1:3000/v1/ws (wss для HTTPS). Swagger Try it out не выполняет WebSocket Upgrade. При подключении приходит {"type":"operations.snapshot","operations":[...]} с максимум 100 последними операциями. Далее — {"type":"operation.updated","operation":{...}} с полным объектом Operation. Принимайте только версии operation.version новее сохранённой. После переподключения приходит новый снимок; старые операции доступны через REST. Канал только для чтения: любое сообщение клиента закрывает соединение кодом 1008 READ_ONLY_CHANNEL. Ping каждые 30 секунд, требуется Pong. Медленный клиент закрывается кодом 1013 SLOW_CLIENT. Origin проверяется по ALLOWED_ORIGINS; URL должен быть ровно /v1/ws без query string.'
+      responses:
+        '101':
+          description: WebSocket-соединение установлено; сообщения описаны схемами OperationsSnapshot и OperationUpdated.
+        '403':
+          description: WebSocket Upgrade отклонён из-за Origin или неверного URL; ответ без JSON.
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-websocket-messages:
+        oneOf:
+          - $ref: '#/components/schemas/OperationsSnapshot'
+          - $ref: '#/components/schemas/OperationUpdated'
+components:
+  parameters:
+    Offset:
+      name: offset
+      in: query
+      description: Начальная позиция страницы; для claims — смещение диапазона ID.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 1000000
+        default: 0
+    Limit:
+      name: limit
+      in: query
+      description: Размер страницы или диапазона ID заявок.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    ShiftId:
+      name: id
+      in: path
+      required: true
+      description: ID смены.
+      schema:
+        $ref: '#/components/schemas/Id'
+    OperationId:
+      name: id
+      in: path
+      required: true
+      description: UUID заказа.
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: Неверный запрос или прикладная ошибка; подробности в error.code, fields и reason.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: INVALID_REQUEST
+              fields:
+                - action.params.amount
+    Forbidden:
+      description: Origin отсутствует в ALLOWED_ORIGINS.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: ORIGIN_NOT_ALLOWED
+    Conflict:
+      description: IDEMPOTENCY_CONFLICT или PREVIEW_ALREADY_SUBMITTED.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: IDEMPOTENCY_CONFLICT
+    OperationNotFound:
+      description: Заказ не найден.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: OPERATION_NOT_FOUND
+    NotFound:
+      description: Нет HTTP-маршрута; для /v1/ws нужен WebSocket Upgrade.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: NOT_FOUND
+    Error:
+      description: Ошибка сервера, RPC или HTTP-протокола; подробности в error.code.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Decimal:
+      type: string
+      minLength: 1
+      maxLength: 160
+      pattern: ^\d+(?:\.\d+)?$
+      description: Десятичная строка в человеческих единицах без знака, экспоненты и запятых. Точность ограничена decimals токена (для AVAX и цен — 18). Сумма должна быть положительной, кроме допускающих ноль бюджетов Uniswap.
+      example: '10.5'
+    UInt:
+      type: string
+      maxLength: 78
+      pattern: ^(?:0|[1-9]\d*)$
+      description: Целое от 0 до 2^256 − 1 в виде строки. Денежные значения — в минимальных единицах, если явно не указано иное.
+      example: '1000000'
+    Id:
+      type: string
+      maxLength: 78
+      pattern: ^[1-9]\d*$
+      description: Положительный uint256 в виде строки, без ведущих нулей.
+      example: '1'
+    Address:
+      type: string
+      pattern: ^0x[0-9a-fA-F]{40}$
+      example: '0xe757a8b1d003BC8704dE110C8458b5358dB12070'
+    SuccessorAddress:
+      type: string
+      pattern: ^0x[0-9a-fA-F]{40}$
+      not:
+        enum:
+          - '0x0000000000000000000000000000000000000000'
+      description: Ненулевой EVM-адрес. При смешанном регистре проверяется checksum; сервер нормализует адрес через ethers.getAddress.
+      example: '0x1111111111111111111111111111111111111111'
+    Hash:
+      type: string
+      pattern: ^0x[0-9a-fA-F]{64}$
+    UnixMilliseconds:
+      type: integer
+      format: int64
+      description: Unix time в миллисекундах.
+      example: 1800000000000
+    UnixSeconds:
+      type: integer
+      format: int64
+      description: Unix time в секундах.
+      example: 1800000000
+    TokenSymbol:
+      type: string
+      enum:
+        - WAVAX
+        - USDT
+        - USDC
+        - BTC.b
+    SlippageBps:
+      type: integer
+      minimum: 0
+      maximum: 1000
+      description: 'Проскальзывание в базисных пунктах: 40 = 0.4%.'
+      example: 40
+    Token:
+      type: object
+      required:
+        - symbol
+        - address
+        - decimals
+      properties:
+        symbol:
+          $ref: '#/components/schemas/TokenSymbol'
+        address:
+          $ref: '#/components/schemas/Address'
+        decimals:
+          type: integer
+          minimum: 0
+    PublicError:
+      type: object
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          description: Стабильный код для обработки и локализации клиентом.
+          example: PLAN_EXPIRED
+        reason:
+          type: string
+          description: Декодированная причина контрактной ошибки.
+          example: EntryPriceUpdateTooEarly
+        fields:
+          type: array
+          items:
+            type: string
+            description: Путь к некорректному полю запроса.
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/PublicError'
+    AssetAmountParams:
+      type: object
+      required:
+        - token
+        - amount
+      properties:
+        token:
+          $ref: '#/components/schemas/TokenSymbol'
+        amount:
+          $ref: '#/components/schemas/Decimal'
+      additionalProperties: false
+    PriceParams:
+      type: object
+      required:
+        - price
+      properties:
+        price:
+          $ref: '#/components/schemas/Decimal'
+      additionalProperties: false
+    PositionParams:
+      type: object
+      required:
+        - tokenId
+      properties:
+        tokenId:
+          $ref: '#/components/schemas/Id'
+      additionalProperties: false
+    Action:
+      oneOf:
+        - $ref: '#/components/schemas/SuccessorSchedule'
+        - $ref: '#/components/schemas/SuccessorRemove'
+        - $ref: '#/components/schemas/ContractSetURI'
+        - $ref: '#/components/schemas/FundCloseShift'
+        - $ref: '#/components/schemas/FundFundShift'
+        - $ref: '#/components/schemas/FundExpireClaim'
+        - $ref: '#/components/schemas/FundUpdateEntryPrice'
+        - $ref: '#/components/schemas/FundChangeDollar'
+        - $ref: '#/components/schemas/AaveSupply'
+        - $ref: '#/components/schemas/AaveBorrow'
+        - $ref: '#/components/schemas/AaveRepay'
+        - $ref: '#/components/schemas/AaveWithdraw'
+        - $ref: '#/components/schemas/LfjSwap'
+        - $ref: '#/components/schemas/UniswapMint'
+        - $ref: '#/components/schemas/UniswapIncrease'
+        - $ref: '#/components/schemas/UniswapCollect'
+        - $ref: '#/components/schemas/UniswapClose'
+      discriminator:
+        propertyName: kind
+        mapping:
+          successor.schedule: '#/components/schemas/SuccessorSchedule'
+          successor.remove: '#/components/schemas/SuccessorRemove'
+          contract.setURI: '#/components/schemas/ContractSetURI'
+          fund.closeShift: '#/components/schemas/FundCloseShift'
+          fund.fundShift: '#/components/schemas/FundFundShift'
+          fund.expireClaim: '#/components/schemas/FundExpireClaim'
+          fund.updateEntryPrice: '#/components/schemas/FundUpdateEntryPrice'
+          fund.changeDollar: '#/components/schemas/FundChangeDollar'
+          aave.supply: '#/components/schemas/AaveSupply'
+          aave.borrow: '#/components/schemas/AaveBorrow'
+          aave.repay: '#/components/schemas/AaveRepay'
+          aave.withdraw: '#/components/schemas/AaveWithdraw'
+          lfj.swap: '#/components/schemas/LfjSwap'
+          uniswap.mint: '#/components/schemas/UniswapMint'
+          uniswap.increase: '#/components/schemas/UniswapIncrease'
+          uniswap.collect: '#/components/schemas/UniswapCollect'
+          uniswap.close: '#/components/schemas/UniswapClose'
+    SuccessorSchedule:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - successor.schedule
+        params:
+          type: object
+          required:
+            - address
+            - timestamp
+          properties:
+            address:
+              $ref: '#/components/schemas/SuccessorAddress'
+            timestamp:
+              type: integer
+              minimum: 1
+              maximum: 253402300799
+              description: Будущий Unix timestamp в секундах.
+          additionalProperties: false
+      additionalProperties: false
+      description: Назначить преемника
+      example:
+        kind: successor.schedule
+        params:
+          address: '0x1111111111111111111111111111111111111111'
+          timestamp: 2000000000
+    SuccessorRemove:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - successor.remove
+        params:
+          type: object
+          required:
+            - address
+          properties:
+            address:
+              $ref: '#/components/schemas/SuccessorAddress'
+          additionalProperties: false
+      additionalProperties: false
+      description: Удалить расписание преемника
+      example:
+        kind: successor.remove
+        params:
+          address: '0x1111111111111111111111111111111111111111'
+    ContractSetURI:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - contract.setURI
+        params:
+          type: object
+          required:
+            - uri
+          properties:
+            uri:
+              type: string
+              minLength: 1
+              maxLength: 2048
+          additionalProperties: false
+      additionalProperties: false
+      description: Изменить contractURI OreVein
+      example:
+        kind: contract.setURI
+        params:
+          uri: ipfs://metadata
+    FundCloseShift:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - fund.closeShift
+        params:
+          type: object
+          properties: {}
+          additionalProperties: false
+      additionalProperties: false
+      description: Закрыть текущую смену
+      example:
+        kind: fund.closeShift
+        params: {}
+    FundFundShift:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - fund.fundShift
+        params:
+          $ref: '#/components/schemas/PriceParams'
+      additionalProperties: false
+      description: Профинансировать последнюю закрытую смену по цене выхода; price задаётся в человеческих единицах с точностью 18 decimals.
+      example:
+        kind: fund.fundShift
+        params:
+          price: '0.95'
+    FundExpireClaim:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - fund.expireClaim
+        params:
+          type: object
+          required:
+            - shiftId
+            - claimId
+          properties:
+            shiftId:
+              $ref: '#/components/schemas/Id'
+            claimId:
+              $ref: '#/components/schemas/Id'
+          additionalProperties: false
+      additionalProperties: false
+      description: Закрыть просроченную заявку смены
+      example:
+        kind: fund.expireClaim
+        params:
+          shiftId: '1'
+          claimId: '1'
+    FundUpdateEntryPrice:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - fund.updateEntryPrice
+        params:
+          $ref: '#/components/schemas/PriceParams'
+      additionalProperties: false
+      description: Обновить цену входа. Допустимые границы и время следующего обновления доступны в GET /v1/fund.
+      example:
+        kind: fund.updateEntryPrice
+        params:
+          price: '1.02'
+    FundChangeDollar:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - fund.changeDollar
+        params:
+          type: object
+          required:
+            - token
+          properties:
+            token:
+              $ref: '#/components/schemas/TokenSymbol'
+          additionalProperties: false
+      additionalProperties: false
+      description: Изменить расчётный токен FreeMine
+      example:
+        kind: fund.changeDollar
+        params:
+          token: USDC
+    AaveSupply:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - aave.supply
+        params:
+          $ref: '#/components/schemas/AssetAmountParams'
+      additionalProperties: false
+      description: Внести токены OreVein в Aave
+      example:
+        kind: aave.supply
+        params:
+          token: USDC
+          amount: '10'
+    AaveBorrow:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - aave.borrow
+        params:
+          $ref: '#/components/schemas/AssetAmountParams'
+      additionalProperties: false
+      description: Занять токены по переменной ставке; получатель — OreVein
+      example:
+        kind: aave.borrow
+        params:
+          token: USDC
+          amount: '10'
+    AaveRepay:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - aave.repay
+        params:
+          $ref: '#/components/schemas/AssetAmountParams'
+      additionalProperties: false
+      description: Погасить долг по переменной ставке заданной суммой
+      example:
+        kind: aave.repay
+        params:
+          token: USDC
+          amount: '10'
+    AaveWithdraw:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - aave.withdraw
+        params:
+          type: object
+          required:
+            - token
+            - amount
+          properties:
+            token:
+              $ref: '#/components/schemas/TokenSymbol'
+            amount:
+              oneOf:
+                - $ref: '#/components/schemas/Decimal'
+                - type: string
+                  enum:
+                    - all
+          additionalProperties: false
+      additionalProperties: false
+      description: 'Вывести указанную сумму или весь вклад через amount: all'
+      example:
+        kind: aave.withdraw
+        params:
+          token: USDC
+          amount: all
+    LfjSwap:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - lfj.swap
+        params:
+          type: object
+          required:
+            - tokenIn
+            - tokenOut
+            - amount
+            - slippageBps
+          properties:
+            tokenIn:
+              $ref: '#/components/schemas/TokenSymbol'
+            tokenOut:
+              $ref: '#/components/schemas/TokenSymbol'
+            amount:
+              $ref: '#/components/schemas/Decimal'
+            slippageBps:
+              $ref: '#/components/schemas/SlippageBps'
+          additionalProperties: false
+      additionalProperties: false
+      description: Обмен exact input через LFJ. tokenIn и tokenOut различаются; маршрут строится через поддерживаемые токены, минимальный выход фиксируется в плане.
+      example:
+        kind: lfj.swap
+        params:
+          tokenIn: WAVAX
+          tokenOut: USDC
+          amount: '1'
+          slippageBps: 40
+    UniswapMint:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - uniswap.mint
+        params:
+          type: object
+          required:
+            - tokenA
+            - tokenB
+            - amountA
+            - amountB
+            - fee
+            - range
+            - slippageBps
+          properties:
+            tokenA:
+              $ref: '#/components/schemas/TokenSymbol'
+            tokenB:
+              $ref: '#/components/schemas/TokenSymbol'
+            amountA:
+              $ref: '#/components/schemas/Decimal'
+            amountB:
+              $ref: '#/components/schemas/Decimal'
+            fee:
+              type: integer
+              minimum: 1
+              maximum: 999999
+              description: 'Миллионные доли: 500 = 0.05%, 3000 = 0.3%. Поддержка проверяется у factory.'
+            range:
+              type: string
+              enum:
+                - full
+                - custom
+            tickLower:
+              type: integer
+              minimum: -887272
+              maximum: 887272
+            tickUpper:
+              type: integer
+              minimum: -887272
+              maximum: 887272
+            initialPrice:
+              allOf:
+                - $ref: '#/components/schemas/Decimal'
+              description: 'Обязательна для неинициализированного пула: tokenB за один tokenA в человеческих единицах. Для существующего пула используется текущая цена.'
+            slippageBps:
+              $ref: '#/components/schemas/SlippageBps'
+          additionalProperties: false
+      additionalProperties: false
+      description: 'Создать позицию, при необходимости создать и инициализировать пул. tokenA и tokenB различаются. Суммы — верхние бюджеты; одна из сумм может быть нулевой для односторонней позиции. Для range: custom обязательны оба tick, кратные tick spacing; tickLower < tickUpper. Ticks относятся к порядку token0/token1 после сортировки адресов.'
+      example:
+        kind: uniswap.mint
+        params:
+          tokenA: WAVAX
+          tokenB: USDC
+          amountA: '1'
+          amountB: '25'
+          fee: 500
+          range: full
+          slippageBps: 40
+    UniswapIncrease:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - uniswap.increase
+        params:
+          type: object
+          required:
+            - tokenId
+            - amount0
+            - amount1
+            - slippageBps
+          properties:
+            tokenId:
+              $ref: '#/components/schemas/Id'
+            amount0:
+              $ref: '#/components/schemas/Decimal'
+            amount1:
+              $ref: '#/components/schemas/Decimal'
+            slippageBps:
+              $ref: '#/components/schemas/SlippageBps'
+          additionalProperties: false
+      additionalProperties: false
+      description: Добавить ликвидность в позицию OreVein. amount0 и amount1 — верхние бюджеты в контрактном порядке token0/token1; допускается нулевая сумма одного токена.
+      example:
+        kind: uniswap.increase
+        params:
+          tokenId: '123'
+          amount0: '1'
+          amount1: '25'
+          slippageBps: 40
+    UniswapCollect:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - uniswap.collect
+        params:
+          $ref: '#/components/schemas/PositionParams'
+      additionalProperties: false
+      description: Забрать все комиссии и причитающиеся токены позиции OreVein
+      example:
+        kind: uniswap.collect
+        params:
+          tokenId: '123'
+    UniswapClose:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - uniswap.close
+        params:
+          type: object
+          required:
+            - tokenId
+            - slippageBps
+          properties:
+            tokenId:
+              $ref: '#/components/schemas/Id'
+            slippageBps:
+              $ref: '#/components/schemas/SlippageBps'
+          additionalProperties: false
+      additionalProperties: false
+      description: Атомарно вывести всю ликвидность, собрать токены и сжечь NFT позиции OreVein. Общий пул остаётся; частичный вывод не поддерживается.
+      example:
+        kind: uniswap.close
+        params:
+          tokenId: '123'
+          slippageBps: 40
+    PreviewRequest:
+      type: object
+      required:
+        - action
+        - maxGasAvax
+      properties:
+        action:
+          $ref: '#/components/schemas/Action'
+        maxGasAvax:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Положительный общий бюджет газа всех шагов в AVAX.
+      additionalProperties: false
+      example:
+        action:
+          kind: aave.supply
+          params:
+            token: USDC
+            amount: '10'
+        maxGasAvax: '0.05'
+    SubmitRequest:
+      type: object
+      required:
+        - previewId
+        - requestId
+      properties:
+        previewId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+          description: Новый UUID на заказ; при повторной отправке сохраните оба исходных UUID.
+      additionalProperties: false
+    ResolveRequest:
+      type: object
+      required:
+        - transactionHash
+      properties:
+        transactionHash:
+          $ref: '#/components/schemas/Hash'
+      additionalProperties: false
+    Approval:
+      type: object
+      required:
+        - token
+        - spender
+        - amount
+      properties:
+        token:
+          $ref: '#/components/schemas/Address'
+        spender:
+          $ref: '#/components/schemas/Address'
+        amount:
+          $ref: '#/components/schemas/UInt'
+        resetBelow:
+          allOf:
+            - $ref: '#/components/schemas/UInt'
+          description: Порог недостаточного allowance для условного сброса.
+    StepCode:
+      type: string
+      enum:
+        - ALLOWANCE_RESET
+        - ALLOWANCE_APPROVE
+        - EXECUTE
+      description: Условный сброс allowance, условная выдача allowance или основное действие.
+    GasEstimate:
+      type: object
+      required:
+        - code
+        - maxGasWei
+        - status
+      properties:
+        code:
+          $ref: '#/components/schemas/StepCode'
+        maxGasWei:
+          type: string
+          nullable: true
+          pattern: ^(?:0|[1-9]\d*)$
+          description: Максимальная оценка в wei; null, если нужны предыдущие шаги.
+        status:
+          type: string
+          enum:
+            - estimated
+            - requires_prior_steps
+            - skipped
+    PreviewStep:
+      type: object
+      required:
+        - id
+        - code
+        - gasEstimate
+      properties:
+        id:
+          type: integer
+          minimum: 0
+        code:
+          $ref: '#/components/schemas/StepCode'
+        approval:
+          $ref: '#/components/schemas/Approval'
+        gasEstimate:
+          $ref: '#/components/schemas/GasEstimate'
+    Summary:
+      type: object
+      properties: {}
+      additionalProperties: true
+      description: 'Состав зависит от action.kind: токены, суммы, адрес получателя, цены, маршрут, диапазон позиции и другие согласованные параметры. Денежные суммы и цены здесь — строки в минимальных единицах.'
+    Preview:
+      type: object
+      required:
+        - id
+        - expiresAt
+        - request
+        - summary
+        - steps
+        - knownGasEstimateAvax
+        - gasEstimateComplete
+      properties:
+        id:
+          type: string
+          format: uuid
+        expiresAt:
+          $ref: '#/components/schemas/UnixMilliseconds'
+        request:
+          $ref: '#/components/schemas/PreviewRequest'
+        summary:
+          $ref: '#/components/schemas/Summary'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewStep'
+        knownGasEstimateAvax:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: 'Сумма известных оценок в AVAX. При gasEstimateComplete: false это только часть полной стоимости.'
+        gasEstimateComplete:
+          type: boolean
+    OperationStatus:
+      type: string
+      enum:
+        - queued
+        - running
+        - waiting
+        - needs_attention
+        - succeeded
+        - failed
+      description: queued — в журнале и очереди; running — подготовка шага; waiting — ожидание receipt/RPC; needs_attention — конфликт nonce или истёкшая неподтверждённая транзакция; succeeded — шаги завершены; failed — исполнение остановлено.
+    StepStatus:
+      type: string
+      enum:
+        - pending
+        - checking
+        - signing
+        - broadcasting
+        - confirming
+        - confirmed
+        - skipped
+        - failed
+    Receipt:
+      type: object
+      required:
+        - hash
+        - blockNumber
+        - status
+        - fee
+        - logs
+      properties:
+        hash:
+          $ref: '#/components/schemas/Hash'
+        blockNumber:
+          type: integer
+        status:
+          type: integer
+          enum:
+            - 0
+            - 1
+        fee:
+          allOf:
+            - $ref: '#/components/schemas/UInt'
+          description: Фактическая комиссия в wei.
+        logs:
+          type: array
+          items:
+            type: object
+            required:
+              - address
+              - topics
+              - data
+            properties:
+              address:
+                $ref: '#/components/schemas/Address'
+              topics:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Hash'
+              data:
+                type: string
+                pattern: ^0x[0-9a-fA-F]*$
+    OperationStep:
+      type: object
+      required:
+        - id
+        - code
+        - status
+      properties:
+        id:
+          type: integer
+          minimum: 0
+        code:
+          $ref: '#/components/schemas/StepCode'
+        status:
+          $ref: '#/components/schemas/StepStatus'
+        approval:
+          $ref: '#/components/schemas/Approval'
+        transactionHash:
+          $ref: '#/components/schemas/Hash'
+        nonce:
+          type: integer
+          minimum: 0
+        receipt:
+          $ref: '#/components/schemas/Receipt'
+        error:
+          $ref: '#/components/schemas/PublicError'
+    Operation:
+      type: object
+      required:
+        - id
+        - previewId
+        - requestId
+        - version
+        - status
+        - createdAt
+        - updatedAt
+        - expiresAt
+        - request
+        - summary
+        - maxGasWei
+        - gasSpentWei
+        - steps
+      properties:
+        id:
+          type: string
+          format: uuid
+        previewId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+          description: Монотонно растёт при каждом обновлении операции.
+        status:
+          $ref: '#/components/schemas/OperationStatus'
+        createdAt:
+          $ref: '#/components/schemas/UnixMilliseconds'
+        updatedAt:
+          $ref: '#/components/schemas/UnixMilliseconds'
+        expiresAt:
+          $ref: '#/components/schemas/UnixMilliseconds'
+        request:
+          $ref: '#/components/schemas/PreviewRequest'
+        summary:
+          $ref: '#/components/schemas/Summary'
+        maxGasWei:
+          $ref: '#/components/schemas/UInt'
+        gasSpentWei:
+          $ref: '#/components/schemas/UInt'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationStep'
+        error:
+          $ref: '#/components/schemas/PublicError'
+    OperationPage:
+      type: object
+      required:
+        - offset
+        - limit
+        - total
+        - operations
+      properties:
+        offset:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Operation'
+    Config:
+      type: object
+      required:
+        - chainId
+        - owner
+        - addresses
+        - tokens
+        - previewTtlSeconds
+        - websocket
+      properties:
+        chainId:
+          type: integer
+          enum:
+            - 43114
+        owner:
+          $ref: '#/components/schemas/Address'
+        addresses:
+          type: object
+          required:
+            - oreVein
+            - freeMine
+            - aave
+            - lfjRouter
+            - lfjQuoter
+            - uniswapFactory
+            - uniswapPositionManager
+          properties:
+            oreVein:
+              $ref: '#/components/schemas/Address'
+            freeMine:
+              $ref: '#/components/schemas/Address'
+            aave:
+              $ref: '#/components/schemas/Address'
+            lfjRouter:
+              $ref: '#/components/schemas/Address'
+            lfjQuoter:
+              $ref: '#/components/schemas/Address'
+            uniswapFactory:
+              $ref: '#/components/schemas/Address'
+            uniswapPositionManager:
+              $ref: '#/components/schemas/Address'
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/Token'
+        previewTtlSeconds:
+          type: integer
+          minimum: 30
+          maximum: 600
+        websocket:
+          type: string
+          enum:
+            - /v1/ws
+    Balances:
+      type: object
+      required:
+        - owner
+        - ownerAvax
+        - oreVein
+        - oreVeinAvax
+        - tokens
+      properties:
+        owner:
+          $ref: '#/components/schemas/Address'
+        ownerAvax:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Баланс владельца в AVAX, не в wei.
+        oreVein:
+          $ref: '#/components/schemas/Address'
+        oreVeinAvax:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Баланс OreVein в AVAX, не в wei.
+        tokens:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/Token'
+              - type: object
+                required:
+                  - balance
+                properties:
+                  balance:
+                    $ref: '#/components/schemas/UInt'
+    Successors:
+      type: object
+      required:
+        - block
+        - blockTimestamp
+        - successors
+      properties:
+        block:
+          type: integer
+        blockTimestamp:
+          $ref: '#/components/schemas/UnixSeconds'
+        successors:
+          type: array
+          items:
+            type: object
+            required:
+              - address
+              - timestamp
+              - eligible
+            properties:
+              address:
+                $ref: '#/components/schemas/Address'
+              timestamp:
+                $ref: '#/components/schemas/UnixSeconds'
+              eligible:
+                type: boolean
+    Fund:
+      type: object
+      required:
+        - block
+        - currentShiftId
+        - entryPrice
+        - priceDecimals
+        - priceUpdatedAt
+        - nextPriceUpdateAt
+        - minimumEntryPrice
+        - maximumEntryPrice
+        - minimumExitPrice
+        - maximumExitPrice
+        - dollar
+        - magicOre
+        - contractURI
+      properties:
+        block:
+          type: integer
+        currentShiftId:
+          $ref: '#/components/schemas/Id'
+        entryPrice:
+          $ref: '#/components/schemas/UInt'
+        priceDecimals:
+          type: integer
+          enum:
+            - 18
+        priceUpdatedAt:
+          $ref: '#/components/schemas/UnixSeconds'
+        nextPriceUpdateAt:
+          $ref: '#/components/schemas/UnixSeconds'
+        minimumEntryPrice:
+          $ref: '#/components/schemas/UInt'
+        maximumEntryPrice:
+          $ref: '#/components/schemas/UInt'
+        minimumExitPrice:
+          $ref: '#/components/schemas/UInt'
+        maximumExitPrice:
+          $ref: '#/components/schemas/UInt'
+        dollar:
+          $ref: '#/components/schemas/Address'
+        magicOre:
+          $ref: '#/components/schemas/Address'
+        contractURI:
+          type: string
+    Shift:
+      type: object
+      required:
+        - block
+        - id
+        - closed
+        - funded
+        - price
+        - dollar
+        - fundedAt
+        - oreAmount
+        - dollarScale
+        - currentClaimId
+        - expireAvailableAt
+      properties:
+        block:
+          type: integer
+        id:
+          $ref: '#/components/schemas/Id'
+        closed:
+          type: boolean
+        funded:
+          type: boolean
+        price:
+          $ref: '#/components/schemas/UInt'
+        dollar:
+          $ref: '#/components/schemas/Address'
+        fundedAt:
+          $ref: '#/components/schemas/UnixSeconds'
+        oreAmount:
+          $ref: '#/components/schemas/UInt'
+        dollarScale:
+          $ref: '#/components/schemas/UInt'
+        currentClaimId:
+          $ref: '#/components/schemas/UInt'
+        expireAvailableAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: 'Unix seconds: fundedAt + 14 дней; null до финансирования.'
+    ClaimPage:
+      type: object
+      required:
+        - block
+        - shiftId
+        - totalIds
+        - offset
+        - limit
+        - claims
+      properties:
+        block:
+          type: integer
+        shiftId:
+          $ref: '#/components/schemas/Id'
+        totalIds:
+          allOf:
+            - $ref: '#/components/schemas/UInt'
+          description: Последний выданный ID, включая уже закрытые заявки.
+        offset:
+          type: integer
+        limit:
+          type: integer
+        claims:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - miner
+              - oreAmount
+            properties:
+              id:
+                $ref: '#/components/schemas/Id'
+              miner:
+                $ref: '#/components/schemas/Address'
+              oreAmount:
+                $ref: '#/components/schemas/UInt'
+    Aave:
+      type: object
+      required:
+        - block
+        - totalCollateralBase
+        - totalDebtBase
+        - availableBorrowsBase
+        - baseDecimals
+        - currentLiquidationThreshold
+        - ltv
+        - healthFactor
+        - healthFactorDecimals
+        - reserves
+      properties:
+        block:
+          type: integer
+        totalCollateralBase:
+          $ref: '#/components/schemas/UInt'
+        totalDebtBase:
+          $ref: '#/components/schemas/UInt'
+        availableBorrowsBase:
+          $ref: '#/components/schemas/UInt'
+        baseDecimals:
+          type: integer
+          enum:
+            - 8
+        currentLiquidationThreshold:
+          $ref: '#/components/schemas/UInt'
+        ltv:
+          $ref: '#/components/schemas/UInt'
+        healthFactor:
+          type: string
+          nullable: true
+          pattern: ^(?:0|[1-9]\d*)$
+          description: 18 decimals, null при отсутствии долга.
+        healthFactorDecimals:
+          type: integer
+          enum:
+            - 18
+        reserves:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/Token'
+              - type: object
+                required:
+                  - supplied
+                  - variableDebt
+                  - supplyRateRay
+                  - variableBorrowRateRay
+                properties:
+                  supplied:
+                    $ref: '#/components/schemas/UInt'
+                  variableDebt:
+                    $ref: '#/components/schemas/UInt'
+                  supplyRateRay:
+                    $ref: '#/components/schemas/UInt'
+                  variableBorrowRateRay:
+                    $ref: '#/components/schemas/UInt'
+    Position:
+      type: object
+      required:
+        - tokenId
+        - token0
+        - token1
+        - fee
+        - tickLower
+        - tickUpper
+        - liquidity
+        - tokensOwed0
+        - tokensOwed1
+      properties:
+        tokenId:
+          $ref: '#/components/schemas/Id'
+        token0:
+          $ref: '#/components/schemas/Token'
+        token1:
+          $ref: '#/components/schemas/Token'
+        fee:
+          type: integer
+        tickLower:
+          type: integer
+        tickUpper:
+          type: integer
+        liquidity:
+          $ref: '#/components/schemas/UInt'
+        tokensOwed0:
+          $ref: '#/components/schemas/UInt'
+        tokensOwed1:
+          $ref: '#/components/schemas/UInt'
+    PositionError:
+      type: object
+      required:
+        - tokenId
+        - error
+      properties:
+        tokenId:
+          $ref: '#/components/schemas/Id'
+        error:
+          $ref: '#/components/schemas/PublicError'
+    PositionPage:
+      type: object
+      required:
+        - total
+        - offset
+        - limit
+        - positions
+      properties:
+        total:
+          $ref: '#/components/schemas/UInt'
+        offset:
+          type: integer
+        limit:
+          type: integer
+        positions:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/Position'
+              - $ref: '#/components/schemas/PositionError'
+    OperationsSnapshot:
+      type: object
+      required:
+        - type
+        - operations
+      properties:
+        type:
+          type: string
+          enum:
+            - operations.snapshot
+        operations:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Operation'
+    OperationUpdated:
+      type: object
+      required:
+        - type
+        - operation
+      properties:
+        type:
+          type: string
+          enum:
+            - operation.updated
+        operation:
+          $ref: '#/components/schemas/Operation'
