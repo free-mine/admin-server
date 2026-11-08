@@ -467,4 +467,3 @@ SDK и Hardhat — dev-зависимости и в рабочий образ н
 
 Документация: [ethers](https://docs.ethers.org/v6/api/providers/),
 [Fastify](https://fastify.dev/docs/latest/Reference/Server/), [ws](https://github.com/websockets/ws).
-Атрибуция TickMath: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
