@@ -3,7 +3,7 @@ services:
     build: .
     image: ore-vein-admin-server:local
     ports:
-      - "127.0.0.1:3000:3000"
+      - '127.0.0.1:3000:3000'
     environment:
       PRIVATE_KEY: ${PRIVATE_KEY:?Set PRIVATE_KEY}
       RPC_URL: ${RPC_URL:?Set RPC_URL}

@@ -1,6 +1,18 @@
-export interface Token { symbol: string; address: string; decimals: number }
+export interface Token {
+  symbol: string
+  address: string
+  decimals: number
+}
 export interface Config {
-  rpcUrl: string; privateKey: string; host: string; port: number; dataDir: string
-  allowedOrigins: string[]; logBlockRange: number; deploymentBlock?: number
-  pollMs: number; previewTtlSeconds: number; rpcTimeoutMs: number
+  host: string
+  port: number
+  rpcUrl: string
+  pollMs: number
+  dataDir: string
+  privateKey: string
+  rpcTimeoutMs: number
+  logBlockRange: number
+  allowedOrigins: string[]
+  deploymentBlock?: number
+  previewTtlSeconds: number
 }
