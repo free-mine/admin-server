@@ -5,9 +5,12 @@ import { createRequire } from 'node:module'
 import { tokens } from '../src/config/index.js'
 import { amount } from '../src/shared/index.js'
 import { previewRequestSchema } from '../src/requests/index.js'
-import { TickMath, uniswapMath } from '../src/protocols/index.js'
-
-const { encodeInitialPrice, mintAmountsWithSlippage, usableTicks } = uniswapMath
+import {
+  TickMath,
+  usableTicks,
+  encodeInitialPrice,
+  mintAmountsWithSlippage,
+} from '../src/protocols/index.js'
 
 const sdk = createRequire(import.meta.url)(
   '@uniswap/v3-sdk',

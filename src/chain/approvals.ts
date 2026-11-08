@@ -1,6 +1,26 @@
 import type { Chain } from './context.js'
+import { ensure } from '../shared/index.js'
 import { erc20Abi } from '../contracts/index.js'
-import type { Approval, PlannedStep } from './types.js'
+import type { Approval, PlannedStep, TransactionTransport } from './types.js'
+
+export async function canSkipApproval(
+  chain: Pick<TransactionTransport, 'allowance'>,
+  step: PlannedStep,
+): Promise<boolean> {
+  if (step.code === 'EXECUTE') {
+    return false
+  }
+  const current = await chain.allowance(step.approval)
+  if (step.code === 'ALLOWANCE_RESET') {
+    if (current === 0n) {
+      return true
+    }
+    // Проверяем также шаги, восстановленные из журнала.
+    ensure(step.approval.resetBelow !== undefined, 'INTERNAL_ERROR')
+    return current >= BigInt(step.approval.resetBelow)
+  }
+  return current >= BigInt(step.approval.amount)
+}
 
 export async function approvalSteps(
   chain: Chain,

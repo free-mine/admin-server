@@ -99,6 +99,7 @@ export const actionSchema = z.discriminatedUnion('kind', [
     }),
   }),
   z.strictObject({ kind: z.literal('uniswap.collect'), params: position }),
+  z.strictObject({ kind: z.literal('uniswap.burn'), params: position }),
   z.strictObject({
     kind: z.literal('uniswap.close'),
     params: position.extend({ slippageBps }),

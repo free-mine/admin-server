@@ -369,6 +369,7 @@ try {
   await order({ kind: 'uniswap.collect', params: { tokenId } })
   await api('/v1/uniswap/positions')
   await order({ kind: 'uniswap.close', params: { tokenId, slippageBps: 100 } })
+  await order({ kind: 'uniswap.burn', params: { tokenId } })
   await assert.rejects(manager.ownerOf(tokenId))
 
   const factory = new Contract(
@@ -428,6 +429,7 @@ try {
     kind: 'uniswap.close',
     params: { tokenId: freshPosition, slippageBps: 100 },
   })
+  await order({ kind: 'uniswap.burn', params: { tokenId: freshPosition } })
   await order({ kind: 'fund.changeDollar', params: { token: 'USDC' } })
   await order({ kind: 'fund.changeDollar', params: { token: 'USDT' } })
 

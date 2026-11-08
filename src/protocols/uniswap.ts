@@ -88,10 +88,7 @@ const approve = (token: Token, value: bigint) => ({
   amount: value.toString(),
 })
 
-export async function readPosition(
-  chain: Chain,
-  id: string,
-): Promise<Position> {
+async function readPosition(chain: Chain, id: string): Promise<Position> {
   const { manager } = await contracts(chain)
   const [owner, position] = await Promise.all([
     manager.ownerOf(id),
@@ -350,7 +347,7 @@ export async function prepareClose(
       ],
     ])
   }
-  calls.push(['collect', [collect(tokenId)]], ['burn', [tokenId]])
+  calls.push(['collect', [collect(tokenId)]])
   return {
     guards: [],
     summary: {
@@ -362,5 +359,33 @@ export async function prepareClose(
       recipient: addresses.oreVein,
     },
     steps: [{ code: 'EXECUTE', call: batch(chain, calls) }],
+  }
+}
+
+export async function prepareBurn(
+  chain: Chain,
+  params: Params<'uniswap.burn'>,
+): Promise<Plan> {
+  const position = await readPosition(chain, params.tokenId)
+  ensure(
+    position.liquidity === 0n &&
+      position.tokensOwed0 === 0n &&
+      position.tokensOwed1 === 0n,
+    'POSITION_NOT_EMPTY',
+  )
+  return {
+    guards: [],
+    summary: { tokenId: params.tokenId },
+    steps: [
+      {
+        code: 'EXECUTE',
+        call: chain.execute(
+          addresses.uniswapPositionManager,
+          positionManagerAbi,
+          'burn',
+          [position.tokenId],
+        ),
+      },
+    ],
   }
 }

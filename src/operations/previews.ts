@@ -1,17 +1,17 @@
 import { randomUUID } from 'node:crypto'
 
-import { formatEther } from 'ethers'
-
-import type { Preview } from './types.js'
 import { prepareFund } from '../fund/index.js'
 import { amount, ensure } from '../shared/index.js'
+import { canSkipApproval } from '../chain/index.js'
 import type { Plan, Chain } from '../chain/index.js'
 import { prepareSuccessor } from '../successors/index.js'
 import type { PreviewRequest } from '../requests/index.js'
+import type { Preview, GasEstimate, PreviewStep } from './types.js'
 import {
   prepareAave,
   prepareSwap,
   prepareMint,
+  prepareBurn,
   prepareClose,
   prepareCollect,
   prepareIncrease,
@@ -28,9 +28,10 @@ export class Previews {
     const preview = this.previews.get(id)
     ensure(preview, 'PREVIEW_NOT_FOUND')
     ensure(preview.expiresAt > Date.now(), 'PREVIEW_EXPIRED')
-    return preview
+    return structuredClone(preview)
   }
   async create(request: PreviewRequest): Promise<Preview> {
+    request = structuredClone(request)
     await this.chain.assertOwner()
     const budget = amount(request.maxGasAvax, 18)
     let expiresAt = Date.now() + this.ttlSeconds * 1000
@@ -80,46 +81,33 @@ export class Previews {
       case 'uniswap.close':
         plan = await prepareClose(this.chain, action.params, deadline)
         break
+      case 'uniswap.burn':
+        plan = await prepareBurn(this.chain, action.params)
+        break
     }
-    const estimates: Preview['estimates'] = []
+    const steps: PreviewStep[] = []
     let dependency = false
     let knownCost = 0n
     for (const step of plan.steps) {
-      const current = step.approval
-        ? await this.chain.allowance(step.approval)
-        : 0n
-      let skipped = false
-      if (step.approval) {
-        if (step.code === 'ALLOWANCE_RESET') {
-          const threshold = step.approval.resetBelow
-          if (current === 0n) {
-            skipped = true
-          } else {
-            ensure(threshold !== undefined, 'INTERNAL_ERROR')
-            skipped = current >= BigInt(threshold)
-          }
-        } else {
-          skipped = current >= BigInt(step.approval.amount)
-        }
-      }
+      const skipped = await canSkipApproval(this.chain, step)
+      let gasEstimate: GasEstimate
       if (skipped) {
-        estimates.push({ code: step.code, maxGasWei: '0', status: 'skipped' })
+        gasEstimate = { maxGasWei: '0', status: 'skipped' }
       } else if (dependency) {
-        estimates.push({
-          code: step.code,
+        gasEstimate = {
           maxGasWei: null,
           status: 'requires_prior_steps',
-        })
+        }
       } else {
         await this.chain.simulate(step.call)
         const fee = await this.chain.estimate(step.call)
         knownCost += fee.maxCost
-        estimates.push({
-          code: step.code,
+        gasEstimate = {
           maxGasWei: fee.maxCost.toString(),
           status: 'estimated',
-        })
+        }
       }
+      steps.push({ ...step, gasEstimate })
       if (step.approval && !skipped) {
         dependency = true
       }
@@ -130,8 +118,7 @@ export class Previews {
       id: randomUUID(),
       expiresAt,
       request,
-      plan,
-      estimates,
+      plan: { ...plan, steps },
     }
     for (const [id, value] of this.previews) {
       if (value.expiresAt <= Date.now()) {
@@ -140,29 +127,6 @@ export class Previews {
     }
     ensure(this.previews.size < 200, 'TOO_MANY_PREVIEWS')
     this.previews.set(preview.id, preview)
-    return preview
-  }
-}
-export function previewView(preview: Preview) {
-  return {
-    id: preview.id,
-    expiresAt: preview.expiresAt,
-    request: preview.request,
-    summary: preview.plan.summary,
-    steps: preview.plan.steps.map((step, index) => ({
-      id: index,
-      code: step.code,
-      approval: step.approval,
-      gasEstimate: preview.estimates[index],
-    })),
-    knownGasEstimateAvax: formatEther(
-      preview.estimates.reduce(
-        (sum, step) => sum + BigInt(step.maxGasWei ?? '0'),
-        0n,
-      ),
-    ),
-    gasEstimateComplete: preview.estimates.every(
-      step => step.status !== 'requires_prior_steps',
-    ),
+    return structuredClone(preview)
   }
 }

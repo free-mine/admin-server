@@ -9,10 +9,17 @@ import {
   JsonRpcProvider,
 } from 'ethers'
 
+import type { Action } from '../requests/index.js'
+import type { JsonObject } from '../shared/index.js'
 import type { Token, Config } from '../config/index.js'
 import { ensure, sameAddress } from '../shared/index.js'
 import { tokens, CHAIN_ID, addresses } from '../config/index.js'
-import { erc20Abi, oreVeinAbi, freeMineAbi } from '../contracts/index.js'
+import {
+  erc20Abi,
+  oreVeinAbi,
+  freeMineAbi,
+  positionManagerAbi,
+} from '../contracts/index.js'
 import type {
   Call,
   Guard,
@@ -233,6 +240,36 @@ export class Chain implements TransactionTransport {
   }
   async nonce(): Promise<number> {
     return this.provider.getTransactionCount(this.owner, 'latest')
+  }
+  async readResult(
+    action: Action,
+    receipt: Receipt,
+  ): Promise<JsonObject | undefined> {
+    if (action.kind === 'uniswap.burn') {
+      return {
+        tokenId: action.params.tokenId,
+        blockNumber: receipt.blockNumber,
+        nftExists: false,
+      }
+    }
+    if (action.kind !== 'uniswap.close') {
+      return undefined
+    }
+    const manager = this.contract(
+      addresses.uniswapPositionManager,
+      positionManagerAbi,
+    )
+    const position = await manager.positions(action.params.tokenId, {
+      blockTag: receipt.blockNumber,
+    })
+    return {
+      tokenId: action.params.tokenId,
+      blockNumber: receipt.blockNumber,
+      nftExists: true,
+      liquidity: String(position.liquidity),
+      tokensOwed0: String(position.tokensOwed0),
+      tokensOwed1: String(position.tokensOwed1),
+    }
   }
   async replacement(
     hash: string,

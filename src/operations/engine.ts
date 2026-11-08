@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { Journal } from './journal.js'
+import { operationView } from './views.js'
+import type { Journal } from './journal.js'
+import { canSkipApproval } from '../chain/index.js'
+import type { PublicError } from '../shared/index.js'
 import type { Receipt, TransactionTransport } from '../chain/index.js'
 import { amount, ensure, AppError, publicError } from '../shared/index.js'
 import type {
@@ -13,22 +16,6 @@ import type {
 
 const terminal = (operation: Operation) =>
   operation.status === 'succeeded' || operation.status === 'failed'
-export function operationView(operation: Operation): OperationView {
-  const { guards: _guards, steps, ...rest } = operation
-  return {
-    ...structuredClone(rest),
-    steps: steps.map(step => ({
-      id: step.id,
-      code: step.code,
-      status: step.status,
-      approval: step.approval,
-      transactionHash: step.receipt?.hash ?? step.signed?.hash,
-      nonce: step.signed?.nonce,
-      receipt: step.receipt,
-      error: step.error,
-    })),
-  }
-}
 
 export class Operations {
   private working = false
@@ -39,7 +26,7 @@ export class Operations {
   fatal = false
 
   constructor(
-    readonly journal: Journal,
+    private readonly journal: Journal,
     private chain: TransactionTransport,
     private pollMs: number,
   ) {}
@@ -55,6 +42,9 @@ export class Operations {
   subscribe(listener: (operation: OperationView) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+  get count(): number {
+    return this.journal.all().length
   }
   list(offset = 0, limit = 20): OperationView[] {
     return [...this.journal.all()]
@@ -110,11 +100,10 @@ export class Operations {
       guards: structuredClone(preview.plan.guards),
       maxGasWei: amount(preview.request.maxGasAvax, 18).toString(),
       gasSpentWei: '0',
-      steps: preview.plan.steps.map((step, id) => ({
-        ...structuredClone(step),
-        id,
-        status: 'pending',
-      })),
+      steps: preview.plan.steps.map((step, id) => {
+        const { gasEstimate: _estimate, ...planned } = structuredClone(step)
+        return { ...planned, id, status: 'pending' }
+      }),
     }
     this.publish(operation)
     // Отдаём клиенту queued до запуска первого асинхронного шага.
@@ -131,10 +120,9 @@ export class Operations {
       this.fatal = true
       throw error
     }
-    const view = operationView(operation)
     for (const listener of this.listeners) {
       try {
-        listener(view)
+        listener(operationView(operation))
       } catch {
         /* Ошибка подписчика не меняет результат транзакции. */
       }
@@ -182,25 +170,10 @@ export class Operations {
           step.status = 'checking'
           this.publish(operation)
           await this.chain.assertOwner()
-          if (step.approval) {
-            const current = await this.chain.allowance(step.approval)
-            let skip: boolean
-            if (step.code === 'ALLOWANCE_RESET') {
-              const threshold = step.approval.resetBelow
-              if (current === 0n) {
-                skip = true
-              } else {
-                ensure(threshold !== undefined, 'INTERNAL_ERROR')
-                skip = current >= BigInt(threshold)
-              }
-            } else {
-              skip = current >= BigInt(step.approval.amount)
-            }
-            if (skip) {
-              step.status = 'skipped'
-              this.publish(operation)
-              continue
-            }
+          if (await canSkipApproval(this.chain, step)) {
+            step.status = 'skipped'
+            this.publish(operation)
+            continue
           }
           await this.chain.validate(operation.guards)
           step.status = 'signing'
@@ -247,6 +220,21 @@ export class Operations {
           )
         }
       }
+      const receipt = operation.steps.at(-1)?.receipt
+      if (receipt) {
+        try {
+          operation.result = await this.chain.readResult(
+            operation.request.action,
+            receipt,
+          )
+        } catch (error) {
+          // Неудачное чтение результата не отменяет подтверждённую транзакцию.
+          operation.result = { error: { ...publicError(error) } }
+        }
+      }
+      if (this.stopped || this.fatal) {
+        return
+      }
       operation.status = 'succeeded'
       delete operation.error
       this.publish(operation)
@@ -277,13 +265,9 @@ export class Operations {
     const signed = step.signed
     ensure(signed, 'INTERNAL_ERROR')
     let lastBroadcast = 0
-    while (!this.stopped) {
-      if (operation.status === 'failed') {
-        return null
-      }
-      if (step.receipt) {
-        return step.receipt
-      }
+    // RPC только собирает результат. Состояние меняется ниже, без await,
+    // после проверки, не завершил ли /resolve это ожидание.
+    const poll = async (): Promise<Receipt | PublicError | null> => {
       try {
         const receipt = await this.chain.receipt(signed.hash)
         if (receipt) {
@@ -291,45 +275,54 @@ export class Operations {
         }
         const nonce = await this.chain.nonce()
         if (nonce > signed.nonce || operation.expiresAt <= Date.now()) {
-          const code =
-            nonce > signed.nonce
-              ? 'NONCE_CONFLICT'
-              : 'EXPIRED_PENDING_TRANSACTION'
-          if (
-            operation.status !== 'needs_attention' ||
-            operation.error?.code !== code
-          ) {
-            operation.status = 'needs_attention'
-            operation.error = { code }
-            step.status = 'confirming'
-            this.publish(operation)
-          }
-        } else {
-          // Повторяется только та же подпись с тем же nonce и хэшем.
-          if (Date.now() - lastBroadcast >= Math.max(15000, this.pollMs)) {
-            lastBroadcast = Date.now()
-            try {
-              await this.chain.broadcast(signed.raw)
-            } catch {
-              /* Ответ RPC мог потеряться после приёма. */
-            }
-          }
-          if (operation.status !== 'waiting' || step.status !== 'confirming') {
-            operation.status = 'waiting'
-            step.status = 'confirming'
-            delete operation.error
-            this.publish(operation)
+          return {
+            code:
+              nonce > signed.nonce
+                ? 'NONCE_CONFLICT'
+                : 'EXPIRED_PENDING_TRANSACTION',
           }
         }
-      } catch (error) {
-        if (this.fatal) {
-          throw error
+        // Повторяется только та же подпись с тем же nonce и хэшем.
+        if (Date.now() - lastBroadcast >= Math.max(15000, this.pollMs)) {
+          lastBroadcast = Date.now()
+          try {
+            await this.chain.broadcast(signed.raw)
+          } catch {
+            /* Ответ RPC мог потеряться после приёма. */
+          }
         }
-        if (operation.error?.code !== 'RPC_UNAVAILABLE') {
-          operation.status = 'waiting'
-          operation.error = { code: 'RPC_UNAVAILABLE' }
-          this.publish(operation)
-        }
+        return null
+      } catch {
+        return { code: 'RPC_UNAVAILABLE' }
+      }
+    }
+    while (!this.stopped && !this.fatal && !terminal(operation)) {
+      if (step.receipt) {
+        return step.receipt
+      }
+      const result = await poll()
+      if (this.stopped || this.fatal || terminal(operation)) {
+        return null
+      }
+      if (step.receipt) {
+        return step.receipt
+      }
+      if (result && 'hash' in result) {
+        return result
+      }
+      const status =
+        result && result.code !== 'RPC_UNAVAILABLE'
+          ? 'needs_attention'
+          : 'waiting'
+      if (
+        operation.status !== status ||
+        operation.error?.code !== result?.code ||
+        step.status !== 'confirming'
+      ) {
+        operation.status = status
+        operation.error = result ?? undefined
+        step.status = 'confirming'
+        this.publish(operation)
       }
       try {
         await delay(this.pollMs, undefined, { signal: this.abort.signal })
