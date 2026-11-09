@@ -5,26 +5,27 @@ import { publicError } from './shared/index.js'
 import { Successors } from './successors/index.js'
 import { Journal, Previews, Operations } from './operations/index.js'
 
+const port = 3000
 let chain: Chain | undefined
 try {
   const config = readConfig()
-  chain = new Chain(config)
-  await chain.assertOwner()
+  chain = await Chain.connect(config)
   const operations = new Operations(
-    new Journal(config.dataDir, chain.owner),
+    new Journal('/app/data', chain.owner, chain.readOnly),
     chain,
     config.pollMs,
   )
   const previews = new Previews(chain, config.previewTtlSeconds)
   const successors = new Successors(chain, config)
   const app = createServer({ config, chain, operations, previews, successors })
-  await app.listen({ host: config.host, port: config.port })
+  await app.listen({ host: config.host, port })
   operations.start()
   console.log(
     JSON.stringify({
       code: 'SERVER_READY',
-      port: config.port,
+      port,
       owner: chain.owner,
+      readOnly: chain.readOnly,
     }),
   )
   let stopping = false

@@ -20,8 +20,11 @@ export class Journal {
   constructor(
     private directory: string,
     owner: string,
+    private readonly readOnly = false,
   ) {
-    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    if (!readOnly) {
+      mkdirSync(directory, { recursive: true, mode: 0o700 })
+    }
     this.path = join(directory, 'operations.json')
     if (existsSync(this.path)) {
       try {
@@ -31,7 +34,9 @@ export class Journal {
           'INVALID_JOURNAL',
         )
         ensure(
-          this.data.chainId === CHAIN_ID && sameAddress(this.data.owner, owner),
+          this.data.chainId === CHAIN_ID &&
+            typeof this.data.owner === 'string' &&
+            (readOnly || sameAddress(this.data.owner, owner)),
           'JOURNAL_OWNER_MISMATCH',
         )
         for (const operation of this.data.operations) {
@@ -51,7 +56,9 @@ export class Journal {
       }
     } else {
       this.data = { format: 1, owner, chainId: CHAIN_ID, operations: [] }
-      this.flush()
+      if (!readOnly) {
+        this.flush()
+      }
     }
   }
   all(): Operation[] {
@@ -61,6 +68,9 @@ export class Journal {
     return this.data.operations.find(operation => operation.id === id)
   }
   save(operation: Operation): void {
+    if (this.readOnly) {
+      throw new AppError('READ_ONLY', 403)
+    }
     const index = this.data.operations.findIndex(
       value => value.id === operation.id,
     )

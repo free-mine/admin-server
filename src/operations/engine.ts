@@ -31,6 +31,9 @@ export class Operations {
     private pollMs: number,
   ) {}
   start(): void {
+    if (this.chain.readOnly) {
+      return
+    }
     this.stopped = false
     this.kick()
   }
@@ -71,6 +74,9 @@ export class Operations {
     }
   }
   submit(preview: Preview, requestId: string): OperationView {
+    if (this.chain.readOnly) {
+      throw new AppError('READ_ONLY', 403)
+    }
     const existing = this.existing(requestId, preview.id)
     if (existing) {
       return existing
@@ -333,6 +339,9 @@ export class Operations {
     return null
   }
   async resolve(id: string, transactionHash: string): Promise<OperationView> {
+    if (this.chain.readOnly) {
+      throw new AppError('READ_ONLY', 403)
+    }
     const operation = this.journal.get(id)
     ensure(operation && !terminal(operation), 'OPERATION_NOT_PENDING')
     const step = operation.steps.find(

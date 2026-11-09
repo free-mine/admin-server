@@ -22,6 +22,7 @@ import type {
 
 export class FakeChain implements TransactionTransport {
   owner = '0x0000000000000000000000000000000000000001'
+  readOnly = false
   signs: SignedTransaction[] = []
   broadcasts: string[] = []
   mined = new Map<string, Receipt>()
@@ -33,6 +34,7 @@ export class FakeChain implements TransactionTransport {
   onBroadcast?: () => void
   onSign?: () => void
   async assertOwner() {}
+  async assertAvailable() {}
   async validate(_guards: Guard[]) {}
   async allowance(_approval: Approval) {
     return this.allowanceValue

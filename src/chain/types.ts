@@ -46,6 +46,7 @@ export interface Receipt {
 export interface TransactionTransport {
   owner: string
   nonce(): Promise<number>
+  readonly readOnly: boolean
   assertOwner(): Promise<void>
   broadcast(raw: string): Promise<void>
   validate(guards: Guard[]): Promise<void>

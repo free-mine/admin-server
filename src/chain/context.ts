@@ -12,8 +12,8 @@ import {
 import type { Action } from '../requests/index.js'
 import type { JsonObject } from '../shared/index.js'
 import type { Token, Config } from '../config/index.js'
-import { ensure, sameAddress } from '../shared/index.js'
 import { tokens, CHAIN_ID, addresses } from '../config/index.js'
+import { ensure, AppError, sameAddress } from '../shared/index.js'
 import {
   erc20Abi,
   oreVeinAbi,
@@ -33,38 +33,64 @@ const oreInterface = new Interface(oreVeinAbi)
 const tokenInterface = new Interface(erc20Abi)
 
 export class Chain implements TransactionTransport {
-  readonly provider: JsonRpcProvider
-  readonly wallet: Wallet
-  readonly owner: string
   readonly oreVein: Contract
   readonly freeMine: Contract
   private readonly checkedTokens = new Set<string>()
 
-  constructor(config: Config) {
+  private constructor(
+    readonly provider: JsonRpcProvider,
+    readonly owner: string,
+    private readonly wallet?: Wallet,
+  ) {
+    this.oreVein = this.contract(addresses.oreVein, oreVeinAbi)
+    this.freeMine = this.contract(addresses.freeMine, freeMineAbi)
+  }
+
+  static async connect(config: Config): Promise<Chain> {
     const request = new FetchRequest(config.rpcUrl)
     request.timeout = config.rpcTimeoutMs
-    this.provider = new JsonRpcProvider(request, undefined, {
+    const provider = new JsonRpcProvider(request, undefined, {
       batchMaxCount: 1,
       cacheTimeout: -1,
     })
-    this.wallet = new Wallet(config.privateKey, this.provider)
-    this.owner = this.wallet.address
-    this.oreVein = this.contract(addresses.oreVein, oreVeinAbi)
-    this.freeMine = this.contract(addresses.freeMine, freeMineAbi)
+    try {
+      const owner: string = await new Contract(
+        addresses.oreVein,
+        oreVeinAbi,
+        provider,
+      ).owner()
+      let wallet: Wallet | undefined
+      if (config.privateKey) {
+        try {
+          const candidate = new Wallet(config.privateKey, provider)
+          if (sameAddress(candidate.address, owner)) {
+            wallet = candidate
+          }
+        } catch {
+          // Непригодный ключ оставляет доступными чтение и симуляции.
+        }
+      }
+      const chain = new Chain(provider, owner, wallet)
+      await chain.assertAvailable()
+      return chain
+    } catch (error) {
+      provider.destroy()
+      throw error
+    }
+  }
+
+  get readOnly(): boolean {
+    return this.wallet === undefined
   }
 
   contract(address: string, abi: InterfaceAbi): Contract {
     return new Contract(address, abi, this.provider)
   }
 
-  async assertOwner(): Promise<void> {
+  async assertAvailable(): Promise<void> {
     ensure(
       BigInt(await this.provider.send('eth_chainId', [])) === BigInt(CHAIN_ID),
       'WRONG_NETWORK',
-    )
-    ensure(
-      sameAddress(await this.oreVein.owner(), this.owner),
-      'OWNER_MISMATCH',
     )
     ensure(
       sameAddress(await this.oreVein.freeMine(), addresses.freeMine),
@@ -73,6 +99,17 @@ export class Chain implements TransactionTransport {
     ensure(
       sameAddress(await this.freeMine.owner(), addresses.oreVein),
       'FREEMINE_OWNER_MISMATCH',
+    )
+  }
+
+  async assertOwner(): Promise<void> {
+    if (this.readOnly) {
+      throw new AppError('READ_ONLY', 403)
+    }
+    await this.assertAvailable()
+    ensure(
+      sameAddress(await this.oreVein.owner(), this.owner),
+      'OWNER_MISMATCH',
     )
   }
 
@@ -178,6 +215,10 @@ export class Chain implements TransactionTransport {
     remainingGas: bigint,
     approval?: Approval,
   ): Promise<SignedTransaction> {
+    const wallet = this.wallet
+    if (!wallet) {
+      throw new AppError('READ_ONLY', 403)
+    }
     ensure(
       sameAddress(call.to, addresses.oreVein) && call.value === '0',
       'INVALID_CALL',
@@ -200,7 +241,7 @@ export class Chain implements TransactionTransport {
       (await this.provider.getBalance(this.owner)) >= estimate.maxCost,
       'INSUFFICIENT_GAS_BALANCE',
     )
-    const request = await this.wallet.populateTransaction({
+    const request = await wallet.populateTransaction({
       ...call,
       chainId: CHAIN_ID,
       gasLimit: estimate.gasLimit,
@@ -208,7 +249,7 @@ export class Chain implements TransactionTransport {
       maxPriorityFeePerGas: estimate.maxPriorityFeePerGas,
       type: 2,
     })
-    const raw = await this.wallet.signTransaction(request)
+    const raw = await wallet.signTransaction(request)
     const tx = Transaction.from(raw)
     ensure(tx.hash, 'SIGNING_FAILED')
     return {
@@ -219,6 +260,7 @@ export class Chain implements TransactionTransport {
     }
   }
   async broadcast(raw: string): Promise<void> {
+    await this.assertOwner()
     await this.provider.broadcastTransaction(raw)
   }
   async receipt(hash: string): Promise<Receipt | null> {
