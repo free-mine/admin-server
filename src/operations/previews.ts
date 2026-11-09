@@ -32,7 +32,7 @@ export class Previews {
   }
   async create(request: PreviewRequest): Promise<Preview> {
     request = structuredClone(request)
-    await this.chain.assertOwner()
+    await this.chain.assertAvailable()
     const budget = amount(request.maxGasAvax, 18)
     let expiresAt = Date.now() + this.ttlSeconds * 1000
     const block = await this.chain.provider.getBlock('latest')

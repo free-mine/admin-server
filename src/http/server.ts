@@ -16,6 +16,22 @@ import {
   previewRequestSchema,
 } from '../requests/index.js'
 
+function allowedOrigin(origin?: string): boolean {
+  if (origin === undefined) {
+    return true
+  }
+  try {
+    const url = new URL(origin)
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.hostname === 'localhost' &&
+      url.origin === origin
+    )
+  } catch {
+    return false
+  }
+}
+
 export function createServer(services: Services) {
   const { config, chain, operations, previews, successors } = services
   // Не логируем тела запросов, заголовки и исключения ethers с RPC URL.
@@ -25,10 +41,6 @@ export function createServer(services: Services) {
     requestTimeout: 30000,
     forceCloseConnections: true,
   })
-  const origins = new Set(config.allowedOrigins)
-  const allowedOrigin = (origin?: string) =>
-    origin === undefined || origins.has(origin)
-
   app.addHook('onRequest', async (request, reply) => {
     if (!allowedOrigin(request.headers.origin)) {
       throw new AppError('ORIGIN_NOT_ALLOWED', 403)
@@ -77,8 +89,12 @@ export function createServer(services: Services) {
         .send({ status: 'unavailable', error: { code: 'JOURNAL_UNAVAILABLE' } })
     }
     try {
-      await chain.assertOwner()
-      return { status: 'ready' }
+      if (chain.readOnly) {
+        await chain.assertAvailable()
+      } else {
+        await chain.assertOwner()
+      }
+      return { status: 'ready', readOnly: chain.readOnly }
     } catch (error) {
       return reply
         .status(503)
@@ -88,6 +104,7 @@ export function createServer(services: Services) {
   app.get('/v1/config', async () => ({
     chainId: CHAIN_ID,
     owner: chain.owner,
+    readOnly: chain.readOnly,
     addresses,
     tokens,
     previewTtlSeconds: config.previewTtlSeconds,
@@ -116,6 +133,7 @@ export function createServer(services: Services) {
     return reply.status(201).send(previewView(preview))
   })
   app.post('/v1/operations', async (request, reply) => {
+    await chain.assertOwner()
     const input = submitSchema.parse(request.body)
     const existing = operations.existing(input.requestId, input.previewId)
     if (existing) {

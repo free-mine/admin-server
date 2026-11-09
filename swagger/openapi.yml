@@ -34,18 +34,33 @@ info:
 
     ### Доступ и запуск
     Авторизации нет; сервер рассчитан на локальное защищённое устройство и один экземпляр на кошелёк.
-    Нужны RPC_URL Avalanche и PRIVATE_KEY текущего владельца OreVein, остальные настройки описаны
-    в [environment.ts](https://github.com/free-mine/admin-server/blob/main/src/config/environment.ts).
-    Сохраняйте /app/data в постоянном volume. Контейнер работает от пользователя node (UID 1000).
-    Для запросов из этой страницы добавьте https://free-mine.github.io в ALLOWED_ORIGINS
-    и задайте адрес API в Servers. Origin задаётся без завершающего / и без пути.
+    Обязателен RPC_URL Avalanche. Для выполнения транзакций передайте PRIVATE_KEY текущего владельца
+    OreVein; без ключа, с пустым, некорректным или чужим ключом сервер работает в режиме read only.
+    Остальные настройки описаны
+    в [README](https://github.com/free-mine/admin-server/blob/main/README.md).
+    Порт сервера всегда 3000, каталог данных — /app/data; сохраняйте его в постоянном volume.
+    Контейнер работает от пользователя node (UID 1000).
+    HTTP и WebSocket разрешают Origin только http://localhost и https://localhost на любом порту.
+    Origin с 127.0.0.1, поддоменами или другими доменами запрещён; путь и завершающий / не допускаются.
+    Swagger UI на GitHub Pages предназначен для чтения документации. Для Try it out раздайте
+    каталог swagger/ локальным HTTP-сервером, откройте его через localhost и задайте адрес API в Servers.
     Проверка Origin не является авторизацией; запросы без Origin разрешены.
     Браузер должен разрешать соединение с адресом API; HTTPS-странице может понадобиться HTTPS endpoint.
     OPTIONS возвращает 204 для разрешённого Origin; HTTP-ответы имеют Cache-Control: no-store.
 
+    ### Read only
+    Поле readOnly в GET /v1/config и GET /ready сообщает режим; /ready возвращает 200 при рабочем RPC.
+    Поле owner содержит адрес владельца контракта при запуске, независимо от переданного ключа.
+    Доступны чтение данных, WebSocket и POST /v1/previews: симуляции и оценка газа используют адрес владельца.
+    POST /v1/operations и POST /v1/operations/{id}/resolve возвращают 403 с кодом READ_ONLY.
+    Журнал доступен для чтения, очередь приостановлена; сервер не подписывает и не отправляет транзакции,
+    включая сохранённые подписи. Файлы журнала не изменяются; без каталога данных история пуста.
+    Режим определяется при запуске. Для смены ключа или режима перезапустите сервер.
+    Недоступный RPC, неверная сеть и несоответствие контрактов не маскируются режимом read only.
+
     ### Восстановление и ошибки
-    DATA_DIR/operations.json хранит заказы, подписи и receipts. После перезапуска с прежним volume и ключом
-    сервер проверяет receipts, при необходимости повторно отправляет ту же подпись с тем же nonce и хэшем.
+    /app/data/operations.json хранит заказы, подписи и receipts. После перезапуска с прежним volume и ключом
+    сервер с ключом владельца проверяет receipts, при необходимости повторно отправляет ту же подпись с тем же nonce и хэшем.
     Preview до подтверждения хранится только в памяти. needs_attention означает конфликт nonce или
     истёкшую неподтверждённую транзакцию; исходный receipt продолжает отслеживаться.
     Для уже подтверждённой внешней замены используйте POST /v1/operations/{id}/resolve.
@@ -55,7 +70,7 @@ info:
     отсутствующий заказ при GET — 404, запрещённый Origin — 403, ошибки RPC/сервера — 500.
     Частые коды: INVALID_REQUEST, PREVIEW_NOT_FOUND, PREVIEW_EXPIRED, PLAN_EXPIRED, PLAN_CHANGED,
     GAS_BUDGET_EXCEEDED, INSUFFICIENT_TOKEN_BALANCE, INSUFFICIENT_GAS_BALANCE, CONTRACT_REVERT,
-    TRANSACTION_REVERTED, OWNER_MISMATCH, WRONG_NETWORK, SERVICE_NOT_READY, QUEUE_FULL.
+    TRANSACTION_REVERTED, READ_ONLY, OWNER_MISMATCH, WRONG_NETWORK, SERVICE_NOT_READY, QUEUE_FULL.
     Коды локализуются клиентом. RPC URL, ключ и подписанные raw-транзакции не возвращаются API.
 servers:
   - url: '{baseUrl}'
@@ -109,7 +124,7 @@ paths:
         - Состояние
       operationId: getReadiness
       summary: Проверить готовность сервера
-      description: Проверяет сеть, владельца OreVein, связь с FreeMine и состояние журнала.
+      description: Проверяет сеть, связь с FreeMine и состояние журнала; в режиме записи также проверяет владельца OreVein. Read only при рабочем RPC возвращает 200 с readOnly=true.
       responses:
         '200':
           description: Успешный ответ.
@@ -119,11 +134,15 @@ paths:
                 type: object
                 required:
                   - status
+                  - readOnly
                 properties:
                   status:
                     type: string
                     enum:
                       - ready
+                  readOnly:
+                    type: boolean
+                    description: true, если сервер работает без ключа владельца и не отправляет транзакции.
         '403':
           $ref: '#/components/responses/Forbidden'
         '503':
@@ -154,7 +173,7 @@ paths:
         - Состояние
       operationId: getConfig
       summary: Прочитать публичную конфигурацию
-      description: Сеть, адрес владельца, контракты, токены и TTL. Приватный ключ и RPC URL не возвращаются.
+      description: Сеть, адрес владельца контракта при запуске, режим readOnly, контракты, токены и TTL. Приватный ключ и RPC URL не возвращаются.
       responses:
         '200':
           description: Успешный ответ.
@@ -345,7 +364,7 @@ paths:
         - Операции
       operationId: submitOperation
       summary: Подтвердить и поставить план в очередь
-      description: Новый заказ возвращает 202. Повтор той же пары requestId/previewId возвращает существующий заказ с 200, в том числе после перезапуска и истечения preview. Другой previewId с прежним requestId даёт IDEMPOTENCY_CONFLICT; повтор previewId с новым requestId — PREVIEW_ALREADY_SUBMITTED (409). При потере HTTP-ответа повторяйте исходную пару UUID. Отключение клиента не отменяет работу; операции выполняются последовательно.
+      description: В режиме read only возвращает 403 READ_ONLY. В режиме записи новый заказ возвращает 202. Повтор той же пары requestId/previewId возвращает существующий заказ с 200, в том числе после перезапуска и истечения preview. Другой previewId с прежним requestId даёт IDEMPOTENCY_CONFLICT; повтор previewId с новым requestId — PREVIEW_ALREADY_SUBMITTED (409). При потере HTTP-ответа повторяйте исходную пару UUID. Отключение клиента не отменяет работу; операции выполняются последовательно.
       requestBody:
         required: true
         content:
@@ -402,7 +421,7 @@ paths:
         - Операции
       operationId: createPreview
       summary: Подготовить план операции
-      description: 'Ничего не подписывает и не отправляет в сеть. Выберите action.kind и заполните соответствующие params; неизвестные поля отклоняются. План фиксирует ограничения, шаги, бюджет газа и expiresAt. При gasEstimateComplete: false часть оценок недоступна до выполнения предыдущих шагов. Preview хранится в памяти, действует до expiresAt и теряется при перезапуске. Сначала покажите пользователю request, summary, steps и оценки; после подтверждения отправьте previewId в POST /v1/operations.'
+      description: 'Доступен и в режиме read only: симуляция и оценка газа выполняются от адреса владельца контракта. Ничего не подписывает и не отправляет в сеть. Выберите action.kind и заполните соответствующие params; неизвестные поля отклоняются. План фиксирует ограничения, шаги, бюджет газа и expiresAt. При gasEstimateComplete: false часть оценок недоступна до выполнения предыдущих шагов. Preview хранится в памяти, действует до expiresAt и теряется при перезапуске. Сначала покажите пользователю request, summary, steps и оценки; после подтверждения отправьте previewId в POST /v1/operations.'
       requestBody:
         required: true
         content:
@@ -591,7 +610,7 @@ paths:
         - Операции
       operationId: resolveOperation
       summary: Принять подтверждённую замену транзакции
-      description: Передайте хэш уже подтверждённой внешней замены/отмены для незавершённой операции с подписанным шагом. Сервер проверяет владельца и nonce. Если получатель, calldata и value совпадают, принимается receipt замены; иначе заказ завершается с TRANSACTION_REPLACED, дальнейшие шаги не исполняются, очередь освобождается. Endpoint сам не подписывает замену и не повышает комиссию. Неподходящее состояние операции или транзакции возвращает HTTP 400.
+      description: В режиме read only возвращает 403 READ_ONLY. Передайте хэш уже подтверждённой внешней замены/отмены для незавершённой операции с подписанным шагом. Сервер проверяет владельца и nonce. Если получатель, calldata и value совпадают, принимается receipt замены; иначе заказ завершается с TRANSACTION_REPLACED, дальнейшие шаги не исполняются, очередь освобождается. Endpoint сам не подписывает замену и не повышает комиссию. Неподходящее состояние операции или транзакции возвращает HTTP 400.
       parameters:
         - $ref: '#/components/parameters/OperationId'
       requestBody:
@@ -619,7 +638,7 @@ paths:
         - WebSocket
       operationId: subscribeOperations
       summary: Подписаться на состояния операций
-      description: 'Подключайтесь WebSocket-клиентом к ws://127.0.0.1:3000/v1/ws (wss для HTTPS). Swagger Try it out не выполняет WebSocket Upgrade. При подключении приходит {"type":"operations.snapshot","operations":[...]} с максимум 100 последними операциями. Далее — {"type":"operation.updated","operation":{...}} с полным объектом Operation. Принимайте только версии operation.version новее сохранённой. После переподключения приходит новый снимок; старые операции доступны через REST. Канал только для чтения: любое сообщение клиента закрывает соединение кодом 1008 READ_ONLY_CHANNEL. Ping каждые 30 секунд, требуется Pong. Медленный клиент закрывается кодом 1013 SLOW_CLIENT. Origin проверяется по ALLOWED_ORIGINS; URL должен быть ровно /v1/ws без query string.'
+      description: 'Подключайтесь WebSocket-клиентом к ws://127.0.0.1:3000/v1/ws (wss для HTTPS). Swagger Try it out не выполняет WebSocket Upgrade. При подключении приходит {"type":"operations.snapshot","operations":[...]} с максимум 100 последними операциями. Далее — {"type":"operation.updated","operation":{...}} с полным объектом Operation. Принимайте только версии operation.version новее сохранённой. После переподключения приходит новый снимок; старые операции доступны через REST. Канал только для чтения: любое сообщение клиента закрывает соединение кодом 1008 READ_ONLY_CHANNEL. Ping каждые 30 секунд, требуется Pong. Медленный клиент закрывается кодом 1013 SLOW_CLIENT. Разрешён только Origin http://localhost или https://localhost на любом порту; запросы без Origin разрешены. URL должен быть ровно /v1/ws без query string.'
       responses:
         '101':
           description: WebSocket-соединение установлено; сообщения описаны схемами OperationsSnapshot и OperationUpdated.
@@ -679,7 +698,7 @@ components:
               fields:
                 - action.params.amount
     Forbidden:
-      description: Origin отсутствует в ALLOWED_ORIGINS.
+      description: Origin должен быть http://localhost или https://localhost на любом порту (ORIGIN_NOT_ALLOWED). Запись операций в режиме read only запрещена (READ_ONLY).
       content:
         application/json:
           schema:
@@ -1705,6 +1724,7 @@ components:
       required:
         - chainId
         - owner
+        - readOnly
         - addresses
         - tokens
         - previewTtlSeconds
@@ -1716,6 +1736,9 @@ components:
             - 43114
         owner:
           $ref: '#/components/schemas/Address'
+        readOnly:
+          type: boolean
+          description: true, если сервер работает без ключа владельца и не отправляет транзакции.
         addresses:
           type: object
           required:

@@ -1,12 +1,12 @@
 import test from 'node:test'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 
 import { AppError } from '../src/shared/index.js'
-import { until, engine, preview } from './helpers.js'
 import type { OperationView } from '../src/operations/index.js'
+import { until, engine, preview, temporary } from './helpers.js'
 import { Journal, Operations } from '../src/operations/index.js'
 
 test('one order executes reset, approval and action sequentially; signatures are private', async t => {
@@ -214,6 +214,66 @@ test('journal from another owner is refused', async t => {
     () => new Journal(directory, '0x0000000000000000000000000000000000000002'),
     /JOURNAL_OWNER_MISMATCH/,
   )
+})
+
+test('read only preserves queued operations and never resends saved signatures', async t => {
+  const { chain, directory, operations } = engine(t)
+  chain.shouldMine = false
+  const pending = operations.submit(preview(), randomUUID())
+  await until(() => operations.get(pending.id).status === 'waiting')
+  const queued = operations.submit(preview(), randomUUID())
+  await operations.stop()
+  const path = join(directory, 'operations.json')
+  const saved = readFileSync(path, 'utf8')
+  const signs = chain.signs.length
+  const broadcasts = chain.broadcasts.length
+  chain.readOnly = true
+  const recovered = new Operations(
+    new Journal(directory, chain.owner, true),
+    chain,
+    5,
+  )
+  recovered.start()
+  await recovered.stop()
+  assert.equal(recovered.get(pending.id).status, 'waiting')
+  assert.equal(recovered.get(queued.id).status, 'queued')
+  assert.equal(recovered.count, 2)
+  assert.throws(() => recovered.submit(preview(), randomUUID()), {
+    code: 'READ_ONLY',
+    status: 403,
+  })
+  await assert.rejects(recovered.resolve(pending.id, 'replacement'), {
+    code: 'READ_ONLY',
+    status: 403,
+  })
+  assert.equal(chain.signs.length, signs)
+  assert.equal(chain.broadcasts.length, broadcasts)
+  assert.equal(readFileSync(path, 'utf8'), saved)
+})
+
+test('read only can inspect an old owner journal without modifying it', async t => {
+  const { directory, operations } = engine(t)
+  const operation = operations.submit(preview(), randomUUID())
+  await until(() => operations.get(operation.id).status === 'succeeded')
+  await operations.stop()
+  const saved = readFileSync(join(directory, 'operations.json'), 'utf8')
+  const reader = new Journal(
+    directory,
+    '0x0000000000000000000000000000000000000002',
+    true,
+  )
+  assert.deepEqual(reader.all(), JSON.parse(saved).operations)
+  const stored = reader.get(operation.id)
+  assert.ok(stored)
+  assert.throws(() => reader.save(stored), { code: 'READ_ONLY', status: 403 })
+  assert.equal(readFileSync(join(directory, 'operations.json'), 'utf8'), saved)
+})
+
+test('read only works without creating a data directory or journal', t => {
+  const directory = join(temporary(t), 'absent')
+  const journal = new Journal(directory, 'owner', true)
+  assert.deepEqual(journal.all(), [])
+  assert.equal(existsSync(directory), false)
 })
 
 for (const rpc of ['receipt', 'nonce', 'broadcast'] as const) {
