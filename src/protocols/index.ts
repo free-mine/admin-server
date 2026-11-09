@@ -1,11 +1,15 @@
 export { prepareSwap } from './lfj.js'
 export { TickMath } from './tick-math.js'
-export * as uniswapMath from './uniswap-math.js'
 export { readAave, prepareAave } from './aave.js'
 export {
+  usableTicks,
+  encodeInitialPrice,
+  mintAmountsWithSlippage,
+} from './uniswap-math.js'
+export {
   prepareMint,
+  prepareBurn,
   prepareClose,
-  readPosition,
   listPositions,
   prepareCollect,
   prepareIncrease,

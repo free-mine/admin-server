@@ -1,5 +1,5 @@
 export { Chain } from './context.js'
-export { approvalSteps } from './approvals.js'
+export { approvalSteps, canSkipApproval } from './approvals.js'
 export type {
   Call,
   Plan,

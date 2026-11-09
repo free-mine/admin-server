@@ -1,3 +1,4 @@
+import type { Action } from '../requests/index.js'
 import type { JsonObject } from '../shared/index.js'
 
 export interface Call {
@@ -9,7 +10,6 @@ export interface Approval {
   token: string
   amount: string
   spender: string
-  resetBelow?: string
 }
 export interface Guard {
   method: string
@@ -17,11 +17,14 @@ export interface Guard {
   expected: string
   contract: 'oreVein' | 'freeMine'
 }
-export interface PlannedStep {
-  call: Call
-  code: string
-  approval?: Approval
-}
+export type PlannedStep = { call: Call } & (
+  | { code: 'EXECUTE'; approval?: never }
+  | { approval: Approval; code: 'ALLOWANCE_APPROVE' }
+  | {
+      code: 'ALLOWANCE_RESET'
+      approval: Approval & { amount: '0'; resetBelow: string }
+    }
+)
 export interface Plan {
   guards: Guard[]
   summary: JsonObject
@@ -48,6 +51,7 @@ export interface TransactionTransport {
   validate(guards: Guard[]): Promise<void>
   allowance(approval: Approval): Promise<bigint>
   receipt(hash: string): Promise<Receipt | null>
+  readResult(action: Action, receipt: Receipt): Promise<JsonObject | undefined>
   sign(
     call: Call,
     remainingGas: bigint,

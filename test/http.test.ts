@@ -78,6 +78,12 @@ test('HTTP ordering, idempotency, origin policy and WebSocket snapshots', async 
   })
   assert.equal(repeated.statusCode, 200)
   assert.equal(repeated.json().id, id)
+  const page = (await app.inject('/v1/operations?offset=0&limit=1')).json()
+  assert.equal(page.total, 1)
+  assert.equal(page.operations[0].id, id)
+  const emptyPage = (await app.inject('/v1/operations?offset=1&limit=1')).json()
+  assert.equal(emptyPage.total, 1)
+  assert.deepEqual(emptyPage.operations, [])
   assert.equal(chain.signs.length, 1)
   assert.ok(!JSON.stringify(messages).includes('signed-secret'))
   const versions = messages.flatMap(message =>

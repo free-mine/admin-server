@@ -556,7 +556,7 @@ paths:
                       tokenId: '123'
                   maxGasAvax: '0.05'
               UniswapClose:
-                summary: Атомарно вывести всю ликвидность, собрать токены и сжечь NFT позиции OreVein. Общий пул остаётся; частичный вывод не поддерживается.
+                summary: Вывести ликвидность, зафиксированную в preview, и собрать токены. NFT сохраняется; остаток ликвидности доступен в result операции. Пустой NFT можно удалить отдельным uniswap.burn.
                 value:
                   action:
                     kind: uniswap.close
@@ -564,6 +564,14 @@ paths:
                       tokenId: '123'
                       slippageBps: 40
                   maxGasAvax: '0.05'
+              UniswapBurn:
+                summary: Удалить пустой NFT отдельной операцией. Ошибка удаления не меняет результат ранее выполненного вывода.
+                value:
+                  action:
+                    kind: uniswap.burn
+                    params:
+                      tokenId: '123'
+                  maxGasAvax: '0.01'
       responses:
         '201':
           description: План подготовлен.
@@ -855,6 +863,7 @@ components:
         - $ref: '#/components/schemas/UniswapIncrease'
         - $ref: '#/components/schemas/UniswapCollect'
         - $ref: '#/components/schemas/UniswapClose'
+        - $ref: '#/components/schemas/UniswapBurn'
       discriminator:
         propertyName: kind
         mapping:
@@ -875,6 +884,7 @@ components:
           uniswap.increase: '#/components/schemas/UniswapIncrease'
           uniswap.collect: '#/components/schemas/UniswapCollect'
           uniswap.close: '#/components/schemas/UniswapClose'
+          uniswap.burn: '#/components/schemas/UniswapBurn'
     SuccessorSchedule:
       type: object
       required:
@@ -1330,12 +1340,40 @@ components:
               $ref: '#/components/schemas/SlippageBps'
           additionalProperties: false
       additionalProperties: false
-      description: Атомарно вывести всю ликвидность, собрать токены и сжечь NFT позиции OreVein. Общий пул остаётся; частичный вывод не поддерживается.
+      description: >-
+        Вывести ликвидность, зафиксированную в preview, и собрать токены.
+        NFT сохраняется, в том числе при нулевом остатке. Если после preview другой адрес
+        добавил ликвидность, вывод согласованного объёма всё равно выполняется.
+        result операции содержит остаток и наличие NFT на блоке подтверждения;
+        актуальное состояние доступно в GET /v1/uniswap/positions.
+        Пустой NFT можно удалить отдельным uniswap.burn.
       example:
         kind: uniswap.close
         params:
           tokenId: '123'
           slippageBps: 40
+    UniswapBurn:
+      type: object
+      required:
+        - kind
+        - params
+      properties:
+        kind:
+          type: string
+          enum:
+            - uniswap.burn
+        params:
+          $ref: '#/components/schemas/PositionParams'
+      additionalProperties: false
+      description: >-
+        Удалить пустой NFT позиции OreVein отдельной операцией.
+        Preview требует нулевой ликвидности и нулевых tokensOwed0/tokensOwed1
+        (иначе POSITION_NOT_EMPTY). Если после проверки позиция изменится, burn
+        может завершиться ошибкой, но ранее выполненный вывод остаётся успешным.
+      example:
+        kind: uniswap.burn
+        params:
+          tokenId: '123'
     PreviewRequest:
       type: object
       required:
@@ -1605,12 +1643,45 @@ components:
           $ref: '#/components/schemas/UInt'
         gasSpentWei:
           $ref: '#/components/schemas/UInt'
+        result:
+          $ref: '#/components/schemas/OperationResult'
         steps:
           type: array
           items:
             $ref: '#/components/schemas/OperationStep'
         error:
           $ref: '#/components/schemas/PublicError'
+    OperationResult:
+      type: object
+      description: >-
+        Результат подтверждённого uniswap.close или uniswap.burn.
+        Для close состояние позиции читается на конец блока подтверждения;
+        ликвидность, добавленная позже, отражается в GET /v1/uniswap/positions.
+        Для burn nftExists равен false. При ошибке чтения возвращается error;
+        статус операции остаётся succeeded, так как транзакция уже выполнена.
+        Поле отсутствует до завершения операции и у остальных видов действий.
+      properties:
+        tokenId:
+          $ref: '#/components/schemas/Id'
+        blockNumber:
+          type: integer
+        nftExists:
+          type: boolean
+        liquidity:
+          $ref: '#/components/schemas/UInt'
+        tokensOwed0:
+          $ref: '#/components/schemas/UInt'
+        tokensOwed1:
+          $ref: '#/components/schemas/UInt'
+        error:
+          $ref: '#/components/schemas/PublicError'
+      example:
+        tokenId: '123'
+        blockNumber: 123456
+        nftExists: true
+        liquidity: '200510'
+        tokensOwed0: '0'
+        tokensOwed1: '0'
     OperationPage:
       type: object
       required:

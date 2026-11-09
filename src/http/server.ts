@@ -130,7 +130,7 @@ export function createServer(services: Services) {
     return {
       offset,
       limit,
-      total: operations.journal.all().length,
+      total: operations.count,
       operations: operations.list(offset, limit),
     }
   })

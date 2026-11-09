@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 
 import { AppError } from '../src/shared/index.js'
 import { until, engine, preview } from './helpers.js'
+import type { OperationView } from '../src/operations/index.js'
 import { Journal, Operations } from '../src/operations/index.js'
 
 test('one order executes reset, approval and action sequentially; signatures are private', async t => {
@@ -43,6 +44,49 @@ test('sufficient allowances skip both optional transactions', async t => {
     operations.get(operation.id).steps.map(step => step.status),
     ['skipped', 'skipped', 'confirmed'],
   )
+})
+
+test('public operation views cannot mutate queued steps or confirmed receipts', async t => {
+  const { chain, operations } = engine(t)
+  chain.allowanceValue = 1n
+  const operation = operations.submit(preview(true), randomUUID())
+  const approval = operation.steps[1].approval
+  assert.ok(approval)
+  approval.amount = '999'
+  await until(() => operations.get(operation.id).status === 'succeeded')
+  assert.equal(operations.get(operation.id).steps[1].approval?.amount, '100')
+
+  for (const view of [operations.get(operation.id), operations.list()[0]]) {
+    const receipt = view.steps[2].receipt
+    assert.ok(receipt)
+    receipt.fee = '999'
+    receipt.logs.push({ address: 'changed', data: '0x', topics: [] })
+  }
+  const receipt = operations.get(operation.id).steps[2].receipt
+  assert.equal(receipt?.fee, '5')
+  assert.deepEqual(receipt?.logs, [])
+})
+
+test('subscribers receive independent snapshots of operation state', async t => {
+  const { operations } = engine(t)
+  operations.subscribe(view => {
+    view.status = 'failed'
+    view.summary.changed = true
+    const approval = view.steps[1].approval
+    assert.ok(approval)
+    approval.amount = '999'
+  })
+  const snapshots: OperationView[] = []
+  operations.subscribe(view => snapshots.push(view))
+  const operation = operations.submit(preview(true), randomUUID())
+  await until(() => operations.get(operation.id).status === 'succeeded')
+  assert.equal(snapshots[0].status, 'queued')
+  assert.equal(snapshots.at(-1)?.status, 'succeeded')
+  for (const view of snapshots) {
+    assert.equal(view.summary.changed, undefined)
+    assert.equal(view.steps[1].approval?.amount, '100')
+  }
+  assert.equal(operations.get(operation.id).summary.changed, undefined)
 })
 
 test('lost broadcast response is resolved by receipt without a second action', async t => {
@@ -120,9 +164,9 @@ test('idempotency survives a restart and rejects conflicting input', async t => 
 })
 
 test('storage failure before broadcast stops the worker', async t => {
-  const { chain, operations } = engine(t)
-  const save = operations.journal.save.bind(operations.journal)
-  operations.journal.save = value => {
+  const { chain, journal, operations } = engine(t)
+  const save = journal.save.bind(journal)
+  journal.save = value => {
     if (value.steps.some(step => step.signed)) {
       throw new AppError('JOURNAL_WRITE_FAILED')
     }
@@ -134,11 +178,11 @@ test('storage failure before broadcast stops the worker', async t => {
 })
 
 test('expired pending signatures are never rebroadcast; queue waits for resolution', async t => {
-  const { chain, operations } = engine(t)
+  const { chain, journal, operations } = engine(t)
   chain.shouldMine = false
   const first = operations.submit(preview(), randomUUID())
   await until(() => operations.get(first.id).status === 'waiting')
-  const pending = operations.journal.get(first.id)
+  const pending = journal.get(first.id)
   assert.ok(pending)
   pending.expiresAt = Date.now() - 1
   await until(() => operations.get(first.id).status === 'needs_attention')
@@ -169,5 +213,150 @@ test('journal from another owner is refused', async t => {
   assert.throws(
     () => new Journal(directory, '0x0000000000000000000000000000000000000002'),
     /JOURNAL_OWNER_MISMATCH/,
+  )
+})
+
+for (const rpc of ['receipt', 'nonce', 'broadcast'] as const) {
+  for (const rejects of [false, true]) {
+    for (const matches of [false, true]) {
+      test(`resolved ${matches ? 'speedup' : 'cancellation'} survives pending ${rpc} ${rejects ? 'failure' : 'response'}`, async t => {
+        const { chain, directory, operations } = engine(t)
+        chain.shouldMine = false
+        let release = () => {}
+        const gate = new Promise<void>(resolve => {
+          release = resolve
+        })
+        let pending = false
+        const pause = async () => {
+          if (pending) {
+            return
+          }
+          pending = true
+          await gate
+          if (rejects) {
+            throw new Error('RPC unavailable')
+          }
+        }
+        if (rpc === 'receipt') {
+          const receipt = chain.receipt.bind(chain)
+          chain.receipt = async hash => {
+            if (chain.broadcasts.length > 0 && !pending) {
+              await pause()
+              return null
+            }
+            return receipt(hash)
+          }
+        } else if (rpc === 'nonce') {
+          chain.nonce = async () => {
+            if (chain.broadcasts.length > 0) {
+              await pause()
+            }
+            return chain.currentNonce
+          }
+        } else {
+          const broadcast = chain.broadcast.bind(chain)
+          chain.broadcast = async raw => {
+            await broadcast(raw)
+            await pause()
+          }
+        }
+        chain.replacement = async hash => ({
+          receipt: { hash, blockNumber: 2, status: 1, fee: '7', logs: [] },
+          matches,
+        })
+        const plan = preview()
+        plan.plan.steps.push({
+          code: 'EXECUTE',
+          call: { to: 'oreVein', data: 'next', value: '0' },
+          gasEstimate: { status: 'requires_prior_steps', maxGasWei: null },
+        })
+        try {
+          const first = operations.submit(plan, randomUUID())
+          await until(() => pending)
+          const later = operations.submit(preview(), randomUUID())
+          chain.currentNonce = 1
+          const resolved = await operations.resolve(first.id, 'replacement')
+          if (!matches) {
+            assert.equal(resolved.status, 'failed')
+            assert.equal(resolved.error?.code, 'TRANSACTION_REPLACED')
+            assert.equal(resolved.gasSpentWei, '7')
+          }
+          chain.shouldMine = true
+          release()
+          await until(() => operations.get(later.id).status === 'succeeded')
+          const result = operations.get(first.id)
+          assert.equal(result.steps[0].receipt?.hash, 'replacement')
+          assert.equal(result.gasSpentWei, matches ? '12' : '7')
+          assert.equal(chain.signs.length, matches ? 3 : 2)
+          if (matches) {
+            assert.equal(result.status, 'succeeded')
+            assert.equal(result.steps[0].status, 'confirmed')
+            assert.equal(result.steps[0].error, undefined)
+          } else {
+            assert.deepEqual(result, resolved)
+            assert.equal(result.steps[0].status, 'failed')
+            assert.equal(result.steps[1].status, 'pending')
+          }
+          assert.equal(
+            new Journal(directory, chain.owner).get(first.id)?.status,
+            result.status,
+          )
+        } finally {
+          release()
+          await operations.stop()
+        }
+      })
+    }
+  }
+}
+
+test('failure to read the result preserves a confirmed withdrawal', async t => {
+  const { chain, operations } = engine(t)
+  chain.readResult = async () => {
+    throw new AppError('RPC_UNAVAILABLE')
+  }
+  const plan = preview()
+  plan.request.action = {
+    kind: 'uniswap.close',
+    params: { tokenId: '1', slippageBps: 100 },
+  }
+  const operation = operations.submit(plan, randomUUID())
+  await until(() => operations.get(operation.id).status === 'succeeded')
+  assert.deepEqual(operations.get(operation.id).result, {
+    error: { code: 'RPC_UNAVAILABLE' },
+  })
+  assert.equal(operations.get(operation.id).gasSpentWei, '5')
+})
+
+test('withdrawal result is published and survives a restart', async t => {
+  const { chain, directory, operations } = engine(t)
+  const plan = preview()
+  plan.request.action = {
+    kind: 'uniswap.close',
+    params: { tokenId: '1', slippageBps: 100 },
+  }
+  const result = {
+    tokenId: '1',
+    nftExists: true,
+    liquidity: '25',
+    blockNumber: 1,
+  }
+  chain.readResult = async (action, receipt) => {
+    assert.deepEqual(action, plan.request.action)
+    assert.equal(receipt.blockNumber, result.blockNumber)
+    return result
+  }
+  let published: unknown
+  operations.subscribe(value => {
+    published = value.result
+  })
+  const operation = operations.submit(plan, randomUUID())
+  await until(() => operations.get(operation.id).status === 'succeeded')
+  assert.deepEqual(operations.get(operation.id).result, result)
+  assert.deepEqual(published, result)
+  await operations.stop()
+  assert.deepEqual(
+    new Journal(directory, chain.owner).get(operation.id)?.result,
+    result,
   )
 })

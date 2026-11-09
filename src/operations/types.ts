@@ -21,16 +21,15 @@ export type StepStatus =
   | 'failed'
 export interface Preview {
   id: string
-  plan: Plan
   expiresAt: number
   request: PreviewRequest
-  estimates: {
-    code: string
-    maxGasWei: string | null
-    status: 'estimated' | 'requires_prior_steps' | 'skipped'
-  }[]
+  plan: Omit<Plan, 'steps'> & { steps: PreviewStep[] }
 }
-export interface OperationStep extends PlannedStep {
+export type GasEstimate =
+  | { maxGasWei: string; status: 'estimated' | 'skipped' }
+  | { maxGasWei: null; status: 'requires_prior_steps' }
+export type PreviewStep = PlannedStep & { gasEstimate: GasEstimate }
+export type OperationStep = PlannedStep & {
   id: number
   receipt?: Receipt
   status: StepStatus
@@ -48,6 +47,7 @@ export interface Operation {
   expiresAt: number
   maxGasWei: string
   summary: JsonObject
+  result?: JsonObject
   gasSpentWei: string
   error?: PublicError
   steps: OperationStep[]
