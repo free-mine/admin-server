@@ -33,7 +33,15 @@ function allowedOrigin(origin?: string): boolean {
 }
 
 export function createServer(services: Services) {
-  const { config, chain, operations, previews, successors } = services
+  const {
+    config,
+    chain,
+    operations,
+    previews,
+    successors,
+    journal,
+    publicState,
+  } = services
   // Не логируем тела запросов, заголовки и исключения ethers с RPC URL.
   const app = Fastify({
     logger: false,
@@ -109,7 +117,21 @@ export function createServer(services: Services) {
     tokens,
     previewTtlSeconds: config.previewTtlSeconds,
     websocket: '/v1/ws',
+    state: '/v1/state',
+    synchronization: '/v1/sync',
   }))
+  app.get('/v1/state', async () => publicState.read())
+  app.post('/v1/state/refresh', async (_request, reply) =>
+    reply.status(202).send(await publicState.refresh()),
+  )
+  app.get('/v1/sync', async () => ({
+    journal: journal.status,
+    state: publicState.status,
+  }))
+  app.post('/v1/sync', async () => {
+    await Promise.all([journal.sync(), publicState.sync()])
+    return { journal: journal.status, state: publicState.status }
+  })
   app.get('/v1/balances', async () => chain.balances())
   app.get('/v1/successors', async () => successors.read())
   app.get('/v1/fund', async () => readFund(chain))

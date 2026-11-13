@@ -1,3 +1,9 @@
+export interface SuccessorHistory {
+  hash: string
+  number: number
+  candidates: Set<string>
+}
+
 export interface Successor {
   address: string
   timestamp: number

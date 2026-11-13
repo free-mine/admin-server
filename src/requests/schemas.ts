@@ -7,12 +7,11 @@ const decimal = z
   .min(1)
   .max(160)
   .regex(/^\d+(?:\.\d+)?$/)
-const uint = z
+export const idSchema = z
   .string()
   .max(78)
-  .regex(/^(?:0|[1-9]\d*)$/)
+  .regex(/^[1-9]\d*$/, { abort: true })
   .refine(value => BigInt(value) <= MaxUint256)
-export const idSchema = uint.refine(value => BigInt(value) > 0n)
 const address = z
   .string()
   .refine(isAddress)
@@ -83,9 +82,10 @@ export const actionSchema = z.discriminatedUnion('kind', [
       amountA: decimal,
       amountB: decimal,
       fee: z.number().int().min(1).max(999999),
-      range: z.enum(['full', 'custom']),
-      tickLower: z.number().int().min(-887272).max(887272).optional(),
-      tickUpper: z.number().int().min(-887272).max(887272).optional(),
+      minBoundaryPercent: z
+        .string()
+        .regex(/^(?:0|[1-9]\d?)(?:\.\d{1,6})?$/)
+        .refine(value => Number(value) > 0 && Number(value) < 100),
       initialPrice: decimal.optional(),
       slippageBps,
     }),

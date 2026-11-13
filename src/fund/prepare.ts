@@ -1,9 +1,12 @@
+import type { FundAction } from './types.js'
 import { addresses } from '../config/index.js'
-import type { Action } from '../requests/index.js'
 import { amount, ensure } from '../shared/index.js'
 import type { Plan, Chain, Guard } from '../chain/index.js'
 
-export async function prepareFund(chain: Chain, action: Action): Promise<Plan> {
+export async function prepareFund(
+  chain: Chain,
+  action: FundAction,
+): Promise<Plan> {
   const guards: Guard[] = []
   const guard = async (method: string): Promise<string> => {
     const value = String(await chain.freeMine.getFunction(method)())
@@ -66,8 +69,6 @@ export async function prepareFund(chain: Chain, action: Action): Promise<Plan> {
       summary.address = token.address
       break
     }
-    default:
-      throw new Error('UNSUPPORTED_FUND_ACTION')
   }
   return {
     steps: [{ code: 'EXECUTE', call: chain.direct(method, args) }],

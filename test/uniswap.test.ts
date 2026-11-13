@@ -14,12 +14,19 @@ import {
 } from 'ethers'
 
 import { Chain } from '../src/chain/index.js'
+import type { Guard } from '../src/chain/index.js'
 import type { Action } from '../src/requests/index.js'
 import { tokens, addresses } from '../src/config/index.js'
 import type { Call, Receipt } from '../src/chain/index.js'
 import { previewRequestSchema } from '../src/requests/index.js'
 import {
+  selectRange,
+  mintAmountsAtPrice,
+  boundaryPriceBounds,
+} from '../src/liquidity/index.js'
+import {
   prepareBurn,
+  prepareMint,
   prepareClose,
   listPositions,
 } from '../src/protocols/index.js'
@@ -27,6 +34,66 @@ import {
 const require = createRequire(import.meta.url)
 const { createHardhatNetworkProvider } =
   require('hardhat/internal/hardhat-network/provider/provider.js') as typeof import('hardhat/internal/hardhat-network/provider/provider.js')
+
+test('execution rechecks live pool price, both boundary margins and asset usage', async () => {
+  const price = 1n << 96n
+  const budget = 10n ** 18n
+  const selected = selectRange({
+    price,
+    amount0: budget,
+    amount1: budget,
+    spacing: 10,
+    minBoundaryPercent: '10',
+    baseIsToken0: true,
+    slippageBps: 100,
+  })
+  const guard: Guard = {
+    contract: 'uniswapPool',
+    token0: tokens[0].address,
+    token1: tokens[2].address,
+    fee: 500,
+    tickLower: selected.tickLower,
+    tickUpper: selected.tickUpper,
+    budget0: String(budget),
+    budget1: String(budget),
+    amount0Desired: String(selected.amount0Desired),
+    amount1Desired: String(selected.amount1Desired),
+    ...boundaryPriceBounds(selected.tickLower, selected.tickUpper, '10', true),
+  }
+  let current = price
+  let pool = '0x0000000000000000000000000000000000000001'
+  const chain = {
+    contract: (address: string) =>
+      address === addresses.uniswapFactory
+        ? { getPool: async () => pool }
+        : { slot0: async () => ({ sqrtPriceX96: current }) },
+  } as unknown as Chain
+  const validate = (value = guard) =>
+    Chain.prototype.validate.call(chain, [value])
+  await validate()
+  current = BigInt(guard.minimumSqrtPriceX96) - 1n
+  await assert.rejects(validate(), /PLAN_CHANGED/)
+  current = BigInt(guard.maximumSqrtPriceX96) + 1n
+  await assert.rejects(validate(), /PLAN_CHANGED/)
+  // The margin can still be valid while the changed price leaves too many
+  // assets unused. This must be rejected independently of the price bounds.
+  current = BigInt(guard.maximumSqrtPriceX96)
+  const usage = mintAmountsAtPrice(
+    current,
+    guard.tickLower,
+    guard.tickUpper,
+    BigInt(guard.amount0Desired),
+    BigInt(guard.amount1Desired),
+  )
+  assert.ok(usage.expected0 * 100n < budget * 99n)
+  await assert.rejects(validate(), /PLAN_CHANGED/)
+  pool = ZeroAddress
+  await assert.rejects(validate(), /PLAN_CHANGED/)
+  await validate({ ...guard, initialSqrtPriceX96: String(price) })
+  pool = '0x0000000000000000000000000000000000000001'
+  current = 0n
+  await validate({ ...guard, initialSqrtPriceX96: String(price) })
+})
 
 test('Uniswap withdrawals and NFT cleanup are independent on a local EVM', async t => {
   const accounts = [Wallet.createRandom(), Wallet.createRandom()]
@@ -153,6 +220,7 @@ test('Uniswap withdrawals and NFT cleanup are independent on a local EVM', async
   assert.ok(latest)
   const deadline = latest.timestamp + 3600
   const chain = {
+    provider,
     contract: (address: string, abi: InterfaceAbi) =>
       new Contract(address, abi, provider),
     tokenByAddress: async (address: string) => {
@@ -162,6 +230,12 @@ test('Uniswap withdrawals and NFT cleanup are independent on a local EVM', async
       assert.ok(token)
       return token
     },
+    token: async (symbol: string) => {
+      const token = tokens.find(value => value.symbol === symbol)
+      assert.ok(token)
+      return token
+    },
+    assertBalance: async () => {},
     direct: Chain.prototype.direct,
     execute: Chain.prototype.execute,
   } as unknown as Chain
@@ -211,6 +285,89 @@ test('Uniswap withdrawals and NFT cleanup are independent on a local EVM', async
       logs: [],
     }
   }
+
+  await t.test(
+    'range preview spends its quoted amounts on the real position manager',
+    async () => {
+      for (const token of [tokenA, tokenB]) {
+        await (await token.transfer(holder.target, parseEther('10'))).wait()
+      }
+      for (const inverse of [false, true]) {
+        const plan = await prepareMint(
+          chain,
+          {
+            tokenA: inverse ? 'USDC' : 'WAVAX',
+            tokenB: inverse ? 'WAVAX' : 'USDC',
+            amountA: '2',
+            amountB: '3',
+            fee: 500,
+            minBoundaryPercent: '10',
+            slippageBps: 100,
+          },
+          deadline,
+        )
+        await Chain.prototype.validate.call(chain, plan.guards)
+        assert.ok(!JSON.stringify(plan.summary).includes('tick'))
+        const amounts = plan.summary.amounts as Record<string, string>
+        const first = inverse ? tokenB : tokenA
+        const second = inverse ? tokenA : tokenB
+        assert.ok(BigInt(amounts.minimumA) * 100n >= parseEther('2') * 99n)
+        assert.ok(BigInt(amounts.minimumB) * 100n >= parseEther('3') * 99n)
+        const mintCall = plan.steps.at(-1)?.call
+        assert.ok(mintCall)
+        const forwarded = holder.interface.decodeFunctionData(
+          'execute',
+          mintCall.data,
+        )
+        const calls = manager.interface.decodeFunctionData(
+          'multicall',
+          forwarded[2],
+        )[0]
+        const encodedMint = manager.interface.decodeFunctionData(
+          'mint',
+          calls[0],
+        )[0]
+        const sameOrder =
+          BigInt(String(first.target)) < BigInt(String(second.target))
+        assert.equal(
+          String(encodedMint.amount0Min),
+          sameOrder ? amounts.minimumA : amounts.minimumB,
+        )
+        assert.equal(
+          String(encodedMint.amount1Min),
+          sameOrder ? amounts.minimumB : amounts.minimumA,
+        )
+        const before = [
+          await first.balanceOf(holder.target),
+          await second.balanceOf(holder.target),
+        ]
+        for (const step of plan.steps) {
+          await execute(step.call)
+        }
+        assert.equal(
+          String(before[0] - (await first.balanceOf(holder.target))),
+          amounts.expectedA,
+        )
+        assert.equal(
+          String(before[1] - (await second.balanceOf(holder.target))),
+          amounts.expectedB,
+        )
+        assert.ok(BigInt(amounts.expectedA) * 100n >= parseEther('2') * 99n)
+        assert.ok(BigInt(amounts.expectedB) * 100n >= parseEther('3') * 99n)
+        assert.equal(
+          BigInt(amounts.expectedA) + BigInt(amounts.leftoverA),
+          parseEther('2'),
+        )
+        assert.equal(
+          BigInt(amounts.expectedB) + BigInt(amounts.leftoverB),
+          parseEther('3'),
+        )
+      }
+      const positions = await listPositions(chain)
+      assert.ok(!JSON.stringify(positions).includes('tick'))
+      assert.ok(positions.positions.every(position => 'range' in position))
+    },
+  )
 
   for (const added of [false, true]) {
     await t.test(

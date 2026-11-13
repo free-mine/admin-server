@@ -103,13 +103,13 @@ export async function prepareSwap(
       recipient: addresses.oreVein,
     },
     steps: [
-      ...(await approvalSteps(chain, [
+      ...approvalSteps(chain, [
         {
           token: tokenIn.address,
           spender: addresses.lfjRouter,
           amount: input.toString(),
         },
-      ])),
+      ]),
       {
         code: 'EXECUTE',
         call: chain.execute(

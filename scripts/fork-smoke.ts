@@ -227,7 +227,7 @@ try {
   // Временный ключ существует только в форке и не выводится в консоль.
   writeFileSync(
     envFile,
-    `RPC_URL=http://host.docker.internal:18545\nPRIVATE_KEY=${owner.privateKey}\nPOLL_INTERVAL_MS=100\nPREVIEW_TTL_SECONDS=600\nRPC_TIMEOUT_MS=120000\nDEPLOYMENT_BLOCK=${startBlock}\n`,
+    `RPC_URL=http://host.docker.internal:18545\nPUBLIC_SERVER_URL=http://host.docker.internal:18546\nPRIVATE_KEY=${owner.privateKey}\nPOLL_INTERVAL_MS=100\nPREVIEW_TTL_SECONDS=600\nRPC_TIMEOUT_MS=120000\nDEPLOYMENT_BLOCK=${startBlock}\n`,
     { mode: 0o600 },
   )
   console.log('SETUP launch Docker container')
@@ -357,7 +357,7 @@ try {
         amountA: '1',
         amountB: '1',
         fee: 500,
-        range: 'full',
+        minBoundaryPercent: '0.1',
         slippageBps: 100,
       },
     }),
@@ -419,7 +419,7 @@ try {
         amountA: '0.2',
         amountB: '0.2',
         fee: emptyFee,
-        range: 'full',
+        minBoundaryPercent: '10',
         initialPrice: '1',
         slippageBps: 100,
       },

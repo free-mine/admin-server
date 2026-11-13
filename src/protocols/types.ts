@@ -1,4 +1,7 @@
 import type { Token } from '../config/index.js'
+import type { Action } from '../requests/index.js'
+
+export type AaveAction = Extract<Action, { kind: `aave.${string}` }>
 
 export interface Quote {
   route: string[]

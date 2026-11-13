@@ -10,6 +10,10 @@ export interface Config {
   privateKey?: string
   rpcTimeoutMs: number
   logBlockRange: number
+  syncIntervalMs: number
+  publicServerUrl: string
   deploymentBlock?: number
+  publicServerKey?: string
   previewTtlSeconds: number
+  publicServerTimeoutMs: number
 }

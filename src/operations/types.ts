@@ -1,4 +1,5 @@
 import type { PreviewRequest } from '../requests/index.js'
+import type { RemoteRecord } from '../public-server/index.js'
 import type { JsonObject, PublicError } from '../shared/index.js'
 import type {
   Plan,
@@ -71,4 +72,48 @@ export interface JournalData {
   owner: string
   chainId: number
   operations: Operation[]
+}
+
+export interface JournalTransactionStore {
+  listTransactions(): Promise<RemoteRecord[]>
+  getTransaction(id: string): Promise<RemoteRecord | undefined>
+  putTransaction(
+    id: string,
+    data: JsonObject,
+    revision: number | null,
+  ): Promise<RemoteRecord>
+}
+
+export interface PendingOperation {
+  operation: Operation
+  baseRevision: number | null
+  attempt?: {
+    operation: Operation
+    baseRevision: number | null
+  }
+}
+
+export interface AcknowledgedOperation {
+  revision: number
+  operation: Operation
+}
+
+export interface ArchivedOperation {
+  revision: number
+}
+
+export interface PendingJournal {
+  format: 2
+  owner: string
+  chainId: number
+  entries: PendingOperation[]
+  active: AcknowledgedOperation[]
+}
+
+export interface JournalStatus {
+  pending: number
+  blocked: boolean
+  connected: boolean
+  historyLoaded: boolean
+  lastError?: PublicError
 }

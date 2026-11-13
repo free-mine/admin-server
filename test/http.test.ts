@@ -5,23 +5,31 @@ import { randomUUID } from 'node:crypto'
 
 import { WebSocket } from 'ws'
 
+import { AppError } from '../src/shared/index.js'
 import type { Chain } from '../src/chain/index.js'
 import { createServer } from '../src/http/index.js'
 import { readConfig } from '../src/config/index.js'
 import { until, engine, preview } from './helpers.js'
+import { PublicState } from '../src/public-state/index.js'
 import type { Previews } from '../src/operations/index.js'
+import { PublicServer } from '../src/public-server/index.js'
 import type { Successors } from '../src/successors/index.js'
 
 test('HTTP ordering, idempotency and WebSocket snapshots', async t => {
-  const { chain, operations } = engine(t)
+  const { chain, operations, journal } = engine(t)
   const plan = preview()
   const config = readConfig({
     RPC_URL: 'http://127.0.0.1:18545',
+    PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
     PRIVATE_KEY: '1'.repeat(64),
   })
   const app = createServer({
     config,
     operations,
+    journal,
+    publicState: new PublicState(
+      new PublicServer({ url: config.publicServerUrl, timeoutMs: 100 }),
+    ),
     chain: chain as unknown as Chain,
     previews: { get: () => plan } as unknown as Previews,
     successors: {} as Successors,
@@ -33,6 +41,25 @@ test('HTTP ordering, idempotency and WebSocket snapshots', async t => {
       .statusCode,
     400,
   )
+  for (const id of ['abc', '1.2', '1e2']) {
+    const response = await app.inject(`/v1/fund/shifts/${id}`)
+    assert.equal(response.statusCode, 400)
+    assert.deepEqual(response.json(), {
+      error: { code: 'INVALID_REQUEST', fields: ['id'] },
+    })
+    const previewResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/previews',
+      payload: {
+        action: { kind: 'uniswap.collect', params: { tokenId: id } },
+        maxGasAvax: '0.1',
+      },
+    })
+    assert.equal(previewResponse.statusCode, 400)
+    assert.deepEqual(previewResponse.json(), {
+      error: { code: 'INVALID_REQUEST', fields: ['action.params.tokenId'] },
+    })
+  }
   const url = await app.listen({ host: '127.0.0.1', port: 0 })
   const socket = new WebSocket(`${url.replace('http:', 'ws:')}/v1/ws`, {
     origin: 'http://localhost:5173',
@@ -86,13 +113,18 @@ test('HTTP ordering, idempotency and WebSocket snapshots', async t => {
 })
 
 test('HTTP and WebSocket accept localhost origins on any port', async t => {
-  const { chain, operations } = engine(t)
+  const { chain, operations, journal } = engine(t)
   const app = createServer({
     config: readConfig({
       RPC_URL: 'http://127.0.0.1:18545',
+      PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
       PRIVATE_KEY: '1'.repeat(64),
     }),
     operations,
+    journal,
+    publicState: new PublicState(
+      new PublicServer({ url: 'http://127.0.0.1:18546', timeoutMs: 100 }),
+    ),
     chain: chain as unknown as Chain,
     previews: {} as Previews,
     successors: {} as Successors,
@@ -175,4 +207,70 @@ test('HTTP and WebSocket accept localhost origins on any port', async t => {
       }
     })
   }
+})
+
+test('public snapshot outages remain visible while local operations keep working', async t => {
+  const { chain, operations, journal } = engine(t)
+  const plan = preview()
+  let offline = false
+  const publicState = new PublicState({
+    state: async () => {
+      if (offline) {
+        throw new AppError('PUBLIC_SERVER_UNAVAILABLE', 503)
+      }
+      return {
+        block: { number: 1, timestamp: Math.floor(Date.now() / 1000) - 600 },
+      }
+    },
+    refresh: async () => {
+      if (offline) {
+        throw new AppError('PUBLIC_SERVER_UNAVAILABLE', 503)
+      }
+      return { status: 'accepted' }
+    },
+  })
+  const app = createServer({
+    config: readConfig({
+      RPC_URL: 'http://rpc.invalid',
+      PUBLIC_SERVER_URL: 'http://public.invalid',
+    }),
+    chain: chain as unknown as Chain,
+    operations,
+    journal,
+    publicState,
+    previews: { get: () => plan } as unknown as Previews,
+    successors: {} as Successors,
+  })
+  t.after(async () => {
+    await app.close()
+    await publicState.stop()
+  })
+  const state = (await app.inject('/v1/state')).json()
+  assert.equal(state.source, 'public-server')
+  assert.equal(state.cached, false)
+  assert.ok(state.ageSeconds >= 600)
+  assert.equal(
+    (await app.inject({ method: 'POST', url: '/v1/state/refresh' })).statusCode,
+    202,
+  )
+  await publicState.sync()
+  offline = true
+  const cached = (await app.inject('/v1/state')).json()
+  assert.equal(cached.cached, true)
+  assert.equal(
+    (await app.inject('/v1/sync')).json().state.lastError.code,
+    'PUBLIC_SERVER_UNAVAILABLE',
+  )
+  assert.equal((await app.inject('/ready')).statusCode, 200)
+  const response = await app.inject({
+    method: 'POST',
+    url: '/v1/operations',
+    payload: { previewId: plan.id, requestId: randomUUID() },
+  })
+  assert.equal(response.statusCode, 202)
+  await until(() => operations.get(response.json().id).status === 'succeeded')
+  const synced = await app.inject({ method: 'POST', url: '/v1/sync' })
+  assert.equal(synced.statusCode, 200)
+  assert.equal(synced.json().state.available, false)
+  assert.ok(!synced.body.includes('signed-secret'))
 })

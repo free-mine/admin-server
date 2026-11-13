@@ -14,10 +14,10 @@ test('one order executes reset, approval and action sequentially; signatures are
   chain.allowanceValue = 1n
   chain.onBroadcast = () => {
     const saved = JSON.parse(
-      readFileSync(join(directory, 'operations.json'), 'utf8'),
+      readFileSync(join(directory, 'operations.pending.json'), 'utf8'),
     )
     assert.ok(
-      saved.operations[0].steps.some(
+      saved.entries[0].operation.steps.some(
         (step: { signed?: unknown }) => step.signed,
       ),
     )
@@ -117,6 +117,27 @@ test('restart recovers an unmined signature, preserving nonce and hash', async t
   assert.equal(new Set(chain.broadcasts).size, 1)
 })
 
+test('starting a stopped worker resumes polling without repeatedly rebroadcasting', async t => {
+  const { chain, operations } = engine(t)
+  chain.shouldMine = false
+  const operation = operations.submit(preview(), randomUUID())
+  await until(() => operations.get(operation.id).status === 'waiting')
+  await operations.stop()
+
+  let polls = 0
+  chain.receipt = async hash => {
+    polls++
+    return polls >= 3
+      ? { hash, blockNumber: 1, status: 1, fee: '5', logs: [] }
+      : null
+  }
+  operations.start()
+  operations.start()
+  await until(() => operations.get(operation.id).status === 'succeeded')
+  assert.equal(chain.signs.length, 1)
+  assert.equal(chain.broadcasts.length, 2)
+})
+
 test('mined transaction survives restart after lost local confirmation', async t => {
   const { chain, directory, operations } = engine(t)
   chain.shouldMine = false
@@ -209,7 +230,8 @@ test('main transaction revert stops remaining steps and records spent gas', asyn
 })
 
 test('journal from another owner is refused', async t => {
-  const { directory } = engine(t)
+  const { directory, operations } = engine(t)
+  operations.submit(preview(), randomUUID())
   assert.throws(
     () => new Journal(directory, '0x0000000000000000000000000000000000000002'),
     /JOURNAL_OWNER_MISMATCH/,
@@ -223,7 +245,7 @@ test('read only preserves queued operations and never resends saved signatures',
   await until(() => operations.get(pending.id).status === 'waiting')
   const queued = operations.submit(preview(), randomUUID())
   await operations.stop()
-  const path = join(directory, 'operations.json')
+  const path = join(directory, 'operations.pending.json')
   const saved = readFileSync(path, 'utf8')
   const signs = chain.signs.length
   const broadcasts = chain.broadcasts.length
@@ -256,17 +278,25 @@ test('read only can inspect an old owner journal without modifying it', async t 
   const operation = operations.submit(preview(), randomUUID())
   await until(() => operations.get(operation.id).status === 'succeeded')
   await operations.stop()
-  const saved = readFileSync(join(directory, 'operations.json'), 'utf8')
+  const saved = readFileSync(join(directory, 'operations.pending.json'), 'utf8')
   const reader = new Journal(
     directory,
     '0x0000000000000000000000000000000000000002',
     true,
   )
-  assert.deepEqual(reader.all(), JSON.parse(saved).operations)
+  assert.deepEqual(
+    reader.all(),
+    JSON.parse(saved).entries.map(
+      (entry: { operation: unknown }) => entry.operation,
+    ),
+  )
   const stored = reader.get(operation.id)
   assert.ok(stored)
   assert.throws(() => reader.save(stored), { code: 'READ_ONLY', status: 403 })
-  assert.equal(readFileSync(join(directory, 'operations.json'), 'utf8'), saved)
+  assert.equal(
+    readFileSync(join(directory, 'operations.pending.json'), 'utf8'),
+    saved,
+  )
 })
 
 test('read only works without creating a data directory or journal', t => {

@@ -1,11 +1,12 @@
 openapi: 3.0.3
 info:
   title: OreVein Admin Server API
-  version: 1.0.0
+  version: 2.0.0
   description: |
     Локальный backend панели владельца Free Mine в Avalanche C-Chain (chainId 43114).
     Капитал и NFT позиций находятся у OreVein; транзакции подписывает владелец, он же оплачивает газ.
     Поддерживаются только WAVAX, USDT, USDC и BTC.b из публичной конфигурации.
+    Основной сервер хранит постоянный журнал и публичный снимок; управляющий подписывает и исполняет операции через RPC.
 
     ### Порядок работы
     1. Создайте план через POST /v1/previews с action и общим maxGasAvax.
@@ -16,10 +17,12 @@ info:
     ### Форматы и ограничения
     Суммы и цены в запросах — десятичные строки в человеческих единицах, например "10.5".
     Экспоненты, запятые и отрицательные значения запрещены. В ответах суммы ERC20, цены и газ в wei
-    представлены целыми строками. Исключения: ownerAvax, oreVeinAvax и knownGasEstimateAvax уже выражены в AVAX.
+    представлены целыми строками. Исключения: ownerAvax, oreVeinAvax и knownGasEstimateAvax уже выражены в AVAX;
+    currentPrice и границы Uniswap — человеческие цены tokenB за tokenA, проценты — десятичные строки.
     Decimals токенов доступны в GET /v1/config; цены FreeMine всегда имеют 18 decimals.
     ID смен, заявок и NFT — положительные целые строки; ID планов, заказов и requestId — UUID.
-    expiresAt, createdAt, updatedAt — Unix milliseconds; контрактные времена — Unix seconds.
+    В операциях expiresAt, createdAt, updatedAt — Unix milliseconds; контрактные времена — Unix seconds.
+    snapshot.updatedAt публичного снимка — строка ISO 8601, snapshot.block.timestamp — Unix seconds.
     Неизвестные поля в телах запросов отклоняются. Максимальный размер тела — 32768 байт.
 
     ### Газ и исполнение
@@ -32,14 +35,28 @@ info:
     Изменение согласованного состояния приводит к PLAN_CHANGED. Ошибка не откатывает предыдущие транзакции
     и не отзывает выданные разрешения; проверяйте steps и receipts. Общей отмены операции нет.
 
+    ### Публичное состояние и RPC
+    GET /v1/state возвращает снимок основного сервера с источником, возрастом и признаком отставания.
+    Снимок не является текущей котировкой: расчёты, проверки балансов и полномочий, симуляции,
+    подпись и отправка всегда используют RPC. Существующие маршруты чтения фонда и протоколов также используют RPC.
+    После receipt управляющий запрашивает обновление, пока номер блока снимка не достигнет блока подтверждения.
+    POST /v1/state/refresh возвращает 202 после принятия запроса, а не после получения свежего снимка.
+    GET /v1/sync показывает состояние синхронизации; POST /v1/sync запускает немедленную попытку.
+
+    ### Диапазон Uniswap V3
+    Для mint задаются два положительных бюджета и minBoundaryPercent: минимальное расстояние обеих
+    границ от текущей цены в процентах. Сервер подбирает диапазон для расчётного использования не менее
+    99% каждого бюджета. Границы могут быть несимметричными и шире заданного минимума.
+    Минимальные суммы транзакции также ограничивают использование снизу 99% каждого бюджета;
+    этот порог может быть строже slippageBps. Расстояния до границ проверяются перед подписью,
+    но цена может измениться во время ожидания транзакции.
+    Preview показывает цены границ, проценты, ожидаемые суммы и остатки. Параметры range и ticks удалены
+    из публичного API версии 2. Для неинициализированного пула нужна initialPrice в tokenB за tokenA.
+
     ### Доступ и запуск
     Авторизации нет; сервер рассчитан на локальное защищённое устройство и один экземпляр на кошелёк.
-    Обязателен RPC_URL Avalanche. Для выполнения транзакций передайте PRIVATE_KEY текущего владельца
-    OreVein; без ключа, с пустым, некорректным или чужим ключом сервер работает в режиме read only.
-    Остальные настройки описаны
+    Запуск контейнера, ключи, volume и переменные окружения описаны
     в [README](https://github.com/free-mine/admin-server/blob/main/README.md).
-    Порт сервера всегда 3000, каталог данных — /app/data; сохраняйте его в постоянном volume.
-    Контейнер работает от пользователя node (UID 1000).
     HTTP и WebSocket разрешают Origin только http://localhost и https://localhost на любом порту.
     Origin с 127.0.0.1, поддоменами или другими доменами запрещён; путь и завершающий / не допускаются.
     Swagger UI на GitHub Pages предназначен для чтения документации. Для Try it out раздайте
@@ -49,28 +66,45 @@ info:
     OPTIONS возвращает 204 для разрешённого Origin; HTTP-ответы имеют Cache-Control: no-store.
 
     ### Read only
+    Без корректного PRIVATE_KEY текущего владельца сервер запускается в режиме read only.
     Поле readOnly в GET /v1/config и GET /ready сообщает режим; /ready возвращает 200 при рабочем RPC.
     Поле owner содержит адрес владельца контракта при запуске, независимо от переданного ключа.
     Доступны чтение данных, WebSocket и POST /v1/previews: симуляции и оценка газа используют адрес владельца.
     POST /v1/operations и POST /v1/operations/{id}/resolve возвращают 403 с кодом READ_ONLY.
     Журнал доступен для чтения, очередь приостановлена; сервер не подписывает и не отправляет транзакции,
-    включая сохранённые подписи. Файлы журнала не изменяются; без каталога данных история пуста.
+    включая сохранённые подписи. Локальные файлы и удалённые записи журнала не изменяются.
+    История читается с основного сервера при наличии ключа API; без связи доступны данные в памяти и локальной очереди.
     Режим определяется при запуске. Для смены ключа или режима перезапустите сервер.
     Недоступный RPC, неверная сеть и несоответствие контрактов не маскируются режимом read only.
 
     ### Восстановление и ошибки
-    /app/data/operations.json хранит заказы, подписи и receipts. После перезапуска с прежним volume и ключом
-    сервер с ключом владельца проверяет receipts, при необходимости повторно отправляет ту же подпись с тем же nonce и хэшем.
+    Основной сервер хранит полные операции, подписи и receipts. До подтверждения удалённой записи изменения
+    сохраняются в /app/data/operations.pending.json, подпись — до отправки транзакции. Этот файл также
+    сохраняет уже синхронизированные незавершённые операции для восстановления без связи и удаляется,
+    когда все операции завершены и синхронизированы. При недоступности основного сервера
+    исполнение через RPC продолжается; очередь отправляется после восстановления связи.
+    При запуске сервер восстанавливает журнал с основного сервера и применяет ещё не отправленные локальные изменения.
+    Для незавершённых операций он проверяет receipts и при необходимости повторно отправляет ту же подпись с тем же nonce и хэшем.
     Preview до подтверждения хранится только в памяти. needs_attention означает конфликт nonce или
     истёкшую неподтверждённую транзакцию; исходный receipt продолжает отслеживаться.
     Для уже подтверждённой внешней замены используйте POST /v1/operations/{id}/resolve.
-    Ошибка записи журнала останавливает исполнителя, /ready возвращает 503.
+    Ошибка локальной записи или конфликт удалённой ревизии останавливает исполнение, /ready возвращает 503.
+    Недоступность основного сервера сама по себе не означает неготовность RPC; проверяйте GET /v1/sync.
+    Прежний operations.json автоматически переносится в локальную очередь в режиме записи.
+    При JOURNAL_CONFLICT сопоставьте локальные и удалённые записи, устраните причину и перезапустите сервер;
+    автоматической перезаписи конфликтующего состояния нет.
     Ошибки REST имеют вид {"error":{"code":"PLAN_EXPIRED"}}; возможны reason и fields.
     Прикладные ошибки обычно возвращают 400, конфликты идемпотентности — 409,
     отсутствующий заказ при GET — 404, запрещённый Origin — 403, ошибки RPC/сервера — 500.
     Частые коды: INVALID_REQUEST, PREVIEW_NOT_FOUND, PREVIEW_EXPIRED, PLAN_EXPIRED, PLAN_CHANGED,
     GAS_BUDGET_EXCEEDED, INSUFFICIENT_TOKEN_BALANCE, INSUFFICIENT_GAS_BALANCE, CONTRACT_REVERT,
     TRANSACTION_REVERTED, READ_ONLY, OWNER_MISMATCH, WRONG_NETWORK, SERVICE_NOT_READY, QUEUE_FULL.
+    Синхронизация сообщает PUBLIC_SERVER_UNAVAILABLE, PUBLIC_SERVER_UNAUTHORIZED, PUBLIC_SERVER_KEY_REQUIRED,
+    PUBLIC_SERVER_CONFLICT, PUBLIC_SERVER_INVALID_RESPONSE и PUBLIC_SERVER_REQUEST_REJECTED.
+    Ошибки журнала: JOURNAL_CONFLICT, INVALID_JOURNAL, JOURNAL_WRITE_FAILED,
+    JOURNAL_OWNER_MISMATCH и JOURNAL_NETWORK_MISMATCH.
+    Подбор диапазона может вернуть RANGE_REQUIRES_BOTH_ASSETS, INVALID_BOUNDARY_PERCENT,
+    RANGE_NOT_AVAILABLE или RANGE_AMOUNTS_INCOMPATIBLE.
     Коды локализуются клиентом. RPC URL, ключ и подписанные raw-транзакции не возвращаются API.
 servers:
   - url: '{baseUrl}'
@@ -81,7 +115,7 @@ servers:
         description: Полный URL API без завершающего /; это не адрес GitHub Pages.
 tags:
   - name: Состояние
-    description: Готовность, конфигурация и балансы.
+    description: Готовность, конфигурация, публичный снимок, синхронизация и балансы.
   - name: Преемники
     description: Расписание получения прав администратора.
   - name: Фонд
@@ -173,7 +207,7 @@ paths:
         - Состояние
       operationId: getConfig
       summary: Прочитать публичную конфигурацию
-      description: Сеть, адрес владельца контракта при запуске, режим readOnly, контракты, токены и TTL. Приватный ключ и RPC URL не возвращаются.
+      description: Сеть, адрес владельца контракта при запуске, режим readOnly, контракты, токены, TTL и пути состояния/синхронизации. Ключи и URL внешних сервисов не возвращаются.
       responses:
         '200':
           description: Успешный ответ.
@@ -183,6 +217,92 @@ paths:
                 $ref: '#/components/schemas/Config'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/state:
+    get:
+      tags:
+        - Состояние
+      operationId: getPublicState
+      summary: Прочитать снимок основного сервера
+      description: |
+        Получает публичный снимок и добавляет его источник, возраст и признак отставания от подтверждённых операций.
+        При ошибке связи возвращает последний снимок из памяти с cached=true. Если снимка ещё нет, возвращает 503.
+        Поле ageSeconds считается от времени блока, а не от момента HTTP-запроса. Для подготовки операций используется RPC.
+      responses:
+        '200':
+          description: Снимок с метаданными актуальности.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicStateView'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/PublicServerUnavailable'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/state/refresh:
+    post:
+      tags:
+        - Состояние
+      operationId: refreshPublicState
+      summary: Запросить обновление снимка на основном сервере
+      description: |
+        Требуется PUBLIC_SERVER_KEY. Ответ означает принятие запроса основным сервером; обновление выполняется асинхронно.
+        Повторный запрос может присоединиться к уже выполняющемуся обновлению для более раннего блока.
+        Получайте новый снимок через GET /v1/state и проверяйте его block и updatedAt.
+      responses:
+        '202':
+          description: Обновление запрошено; возвращено локальное состояние синхронизации снимка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicStateStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '502':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/PublicServerUnavailable'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/sync:
+    get:
+      tags:
+        - Состояние
+      operationId: getSynchronization
+      summary: Прочитать состояние синхронизации
+      description: Возвращает последнее известное состояние без запроса к основному серверу. Проверяйте pending, blocked, historyLoaded и lastError независимо от /ready.
+      responses:
+        '200':
+          description: Состояние журнала и публичного снимка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Synchronization'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags:
+        - Состояние
+      operationId: synchronize
+      summary: Выполнить попытку синхронизации сейчас
+      description: |
+        Синхронизирует журнал и читает публичный снимок. Одновременные обращения используют текущую попытку.
+        Ошибки связи отражаются в lastError соответствующего раздела ответа, поэтому HTTP 200 не означает,
+        что очередь пуста или снимок достиг требуемого блока. Read only читает журнал, не отправляя изменения.
+      responses:
+        '200':
+          description: Состояние после попытки синхронизации.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Synchronization'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -319,7 +439,7 @@ paths:
         - Протоколы
       operationId: getPositions
       summary: Прочитать NFT позиций OreVein в Uniswap V3
-      description: Если отдельную позицию прочитать не удалось, её элемент содержит tokenId и error вместо данных позиции.
+      description: Читает RPC. Возвращает tokenA/tokenB, текущую цену, цены границ и расстояния в процентах. Если отдельную позицию прочитать не удалось, её элемент содержит tokenId и error вместо данных позиции.
       parameters:
         - $ref: '#/components/parameters/Offset'
         - $ref: '#/components/parameters/Limit'
@@ -342,7 +462,7 @@ paths:
         - Операции
       operationId: listOperations
       summary: Прочитать историю заказов
-      description: Новые операции первыми. Статусы отражают состояние записанного журнала.
+      description: Новые операции первыми. Статусы отражают состояние записанного журнала. До загрузки удалённой истории список может содержать только локальные записи восстановления; проверяйте journal.historyLoaded в GET /v1/sync.
       parameters:
         - $ref: '#/components/parameters/Offset'
         - $ref: '#/components/parameters/Limit'
@@ -542,7 +662,7 @@ paths:
                       slippageBps: 40
                   maxGasAvax: '0.05'
               UniswapMint:
-                summary: 'Создать позицию, при необходимости создать и инициализировать пул. tokenA и tokenB различаются. Суммы — верхние бюджеты; одна из сумм может быть нулевой для односторонней позиции. Для range: custom обязательны оба tick, кратные tick spacing; tickLower < tickUpper. Ticks относятся к порядку token0/token1 после сортировки адресов.'
+                summary: Создать позицию с подбором диапазона по двум положительным бюджетам; каждая граница отстоит от текущей цены минимум на minBoundaryPercent.
                 value:
                   action:
                     kind: uniswap.mint
@@ -552,7 +672,7 @@ paths:
                       amountA: '1'
                       amountB: '25'
                       fee: 500
-                      range: full
+                      minBoundaryPercent: '5'
                       slippageBps: 40
                   maxGasAvax: '0.05'
               UniswapIncrease:
@@ -739,6 +859,15 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    PublicServerUnavailable:
+      description: Основной сервер недоступен, не завершил первую синхронизацию или отсутствует необходимый ключ API.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: PUBLIC_SERVER_UNAVAILABLE
   schemas:
     Decimal:
       type: string
@@ -1235,7 +1364,7 @@ components:
             - amountA
             - amountB
             - fee
-            - range
+            - minBoundaryPercent
             - slippageBps
           properties:
             tokenA:
@@ -1251,19 +1380,11 @@ components:
               minimum: 1
               maximum: 999999
               description: 'Миллионные доли: 500 = 0.05%, 3000 = 0.3%. Поддержка проверяется у factory.'
-            range:
+            minBoundaryPercent:
               type: string
-              enum:
-                - full
-                - custom
-            tickLower:
-              type: integer
-              minimum: -887272
-              maximum: 887272
-            tickUpper:
-              type: integer
-              minimum: -887272
-              maximum: 887272
+              pattern: ^(?!0(?:\.0{1,6})?$)(?:0|[1-9]\d?)(?:\.\d{1,6})?$
+              description: Минимальное расстояние каждой границы от текущей цены в процентах; строго больше 0 и меньше 100, до 6 знаков после точки. Сервер подбирает границы для использования не менее 99% каждого положительного бюджета. Цена выражена в tokenB за tokenA.
+              example: '5'
             initialPrice:
               allOf:
                 - $ref: '#/components/schemas/Decimal'
@@ -1272,7 +1393,15 @@ components:
               $ref: '#/components/schemas/SlippageBps'
           additionalProperties: false
       additionalProperties: false
-      description: 'Создать позицию, при необходимости создать и инициализировать пул. tokenA и tokenB различаются. Суммы — верхние бюджеты; одна из сумм может быть нулевой для односторонней позиции. Для range: custom обязательны оба tick, кратные tick spacing; tickLower < tickUpper. Ticks относятся к порядку token0/token1 после сортировки адресов.'
+      description: |
+        Создать позицию, при необходимости создать и инициализировать пул. tokenA и tokenB различаются,
+        оба бюджета должны быть положительными. Сервер подбирает диапазон по текущей цене RPC и соотношению
+        сумм: обе границы отстоят минимум на minBoundaryPercent, расчётное использование каждого бюджета не ниже 99%.
+        Диапазон может быть несимметричным. Если условия несовместимы, возвращается RANGE_AMOUNTS_INCOMPATIBLE;
+        нулевой бюджет даёт RANGE_REQUIRES_BOTH_ASSETS. Границы и использование повторно проверяются перед подписью.
+        Минимальные суммы mint не ниже 99% каждого исходного бюджета, с округлением вверх в минимальных единицах;
+        при несовместимом движении цены транзакция отклоняется. Этот порог может быть строже slippageBps.
+        range, tickLower и tickUpper не принимаются. В summary возвращается UniswapMintSummary с ценами и процентами.
       example:
         kind: uniswap.mint
         params:
@@ -1281,7 +1410,7 @@ components:
           amountA: '1'
           amountB: '25'
           fee: 500
-          range: full
+          minBoundaryPercent: '5'
           slippageBps: 40
     UniswapIncrease:
       type: object
@@ -1496,10 +1625,128 @@ components:
         gasEstimate:
           $ref: '#/components/schemas/GasEstimate'
     Summary:
+      anyOf:
+        - $ref: '#/components/schemas/UniswapMintSummary'
+        - type: object
+          additionalProperties: true
+      description: 'Состав зависит от action.kind. Для uniswap.mint используется UniswapMintSummary. Денежные суммы — строки в минимальных единицах; currentPrice и границы Uniswap — человеческие цены tokenB за tokenA; проценты — десятичные строки.'
+    PriceRange:
       type: object
-      properties: {}
-      additionalProperties: true
-      description: 'Состав зависит от action.kind: токены, суммы, адрес получателя, цены, маршрут, диапазон позиции и другие согласованные параметры. Денежные суммы и цены здесь — строки в минимальных единицах.'
+      required:
+        - lowerPrice
+        - upperPrice
+        - lowerDistancePercent
+        - upperDistancePercent
+      properties:
+        lowerPrice:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Нижняя граница в tokenB за tokenA, в человеческих единицах.
+        upperPrice:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Верхняя граница в tokenB за tokenA, в человеческих единицах.
+        lowerDistancePercent:
+          type: string
+          nullable: true
+          description: Расстояние от текущей цены до нижней границы в процентах текущей цены; null, если цена вне диапазона или на границе.
+        upperDistancePercent:
+          type: string
+          nullable: true
+          description: Расстояние от текущей цены до верхней границы в процентах текущей цены; null, если цена вне диапазона или на границе.
+    UniswapMintSummary:
+      type: object
+      required:
+        - tokenA
+        - tokenB
+        - decimalsA
+        - decimalsB
+        - fee
+        - minBoundaryPercent
+        - minimumUtilizationPercent
+        - currentPrice
+        - inRange
+        - range
+        - initialize
+        - amounts
+        - deadline
+        - recipient
+      properties:
+        tokenA:
+          $ref: '#/components/schemas/TokenSymbol'
+        tokenB:
+          $ref: '#/components/schemas/TokenSymbol'
+        decimalsA:
+          type: integer
+        decimalsB:
+          type: integer
+        fee:
+          type: integer
+        minBoundaryPercent:
+          type: string
+          description: Запрошенное минимальное расстояние обеих границ в процентах.
+        minimumUtilizationPercent:
+          type: string
+          enum:
+            - '99'
+        currentPrice:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Цена RPC при подготовке preview, в tokenB за tokenA.
+        inRange:
+          type: boolean
+        range:
+          $ref: '#/components/schemas/PriceRange'
+        initialize:
+          type: boolean
+          description: План включает создание/инициализацию пула по initialPrice.
+        amounts:
+          $ref: '#/components/schemas/UniswapMintAmounts'
+        deadline:
+          $ref: '#/components/schemas/UnixSeconds'
+        recipient:
+          $ref: '#/components/schemas/Address'
+    UniswapMintAmounts:
+      type: object
+      description: Суммы в минимальных единицах соответствующего токена; utilizationPercent — проценты на цене preview. minimumA/B равны большему из минимума по slippageBps и 99% исходного бюджета с округлением вверх; этот порог закреплён в параметрах mint.
+      required:
+        - budgetA
+        - budgetB
+        - desiredA
+        - desiredB
+        - expectedA
+        - expectedB
+        - minimumA
+        - minimumB
+        - leftoverA
+        - leftoverB
+        - utilizationPercentA
+        - utilizationPercentB
+      properties:
+        budgetA:
+          $ref: '#/components/schemas/UInt'
+        budgetB:
+          $ref: '#/components/schemas/UInt'
+        desiredA:
+          $ref: '#/components/schemas/UInt'
+        desiredB:
+          $ref: '#/components/schemas/UInt'
+        expectedA:
+          $ref: '#/components/schemas/UInt'
+        expectedB:
+          $ref: '#/components/schemas/UInt'
+        minimumA:
+          $ref: '#/components/schemas/UInt'
+        minimumB:
+          $ref: '#/components/schemas/UInt'
+        leftoverA:
+          $ref: '#/components/schemas/UInt'
+        leftoverB:
+          $ref: '#/components/schemas/UInt'
+        utilizationPercentA:
+          $ref: '#/components/schemas/Decimal'
+        utilizationPercentB:
+          $ref: '#/components/schemas/Decimal'
     Preview:
       type: object
       required:
@@ -1729,6 +1976,8 @@ components:
         - tokens
         - previewTtlSeconds
         - websocket
+        - state
+        - synchronization
       properties:
         chainId:
           type: integer
@@ -1776,6 +2025,216 @@ components:
           type: string
           enum:
             - /v1/ws
+        state:
+          type: string
+          enum:
+            - /v1/state
+        synchronization:
+          type: string
+          enum:
+            - /v1/sync
+    PublicBlock:
+      type: object
+      required:
+        - number
+        - hash
+        - timestamp
+      properties:
+        number:
+          type: integer
+          minimum: 0
+        hash:
+          $ref: '#/components/schemas/Hash'
+        timestamp:
+          $ref: '#/components/schemas/UnixSeconds'
+    PublicSnapshot:
+      type: object
+      description: |
+        Исходный снимок GET /v1/state основного сервера, без преобразования в текущие RPC-данные.
+        fund содержит magicOre, oreVein и freeMine; portfolio содержит nativeBalance, balances, aave и uniswap.
+        Суммы — строки минимальных единиц, цены Uniswap и healthFactor — обычные десятичные строки.
+        Набор сохраняемых смен и пар определяется основным сервером; снимок может не содержать всех исторических смен и NFT.
+        Полные вложенные схемы опубликованы в OpenAPI основного сервера.
+      externalDocs:
+        description: Формат PublicSnapshot основного сервера
+        url: https://free-mine.github.io/server/
+      required:
+        - format
+        - chain
+        - block
+        - updatedAt
+        - fund
+        - portfolio
+      properties:
+        format:
+          type: integer
+          enum:
+            - 1
+        chain:
+          type: object
+          required:
+            - chainId
+            - deploymentTx
+            - magicOre
+            - freeMine
+            - oreVein
+          properties:
+            chainId:
+              type: integer
+              enum:
+                - 43114
+            deploymentTx:
+              $ref: '#/components/schemas/Hash'
+            magicOre:
+              $ref: '#/components/schemas/Address'
+            freeMine:
+              $ref: '#/components/schemas/Address'
+            oreVein:
+              $ref: '#/components/schemas/Address'
+        block:
+          $ref: '#/components/schemas/PublicBlock'
+        updatedAt:
+          type: string
+          format: date-time
+        fund:
+          type: object
+          required:
+            - magicOre
+            - oreVein
+            - freeMine
+          properties:
+            magicOre:
+              type: object
+              additionalProperties: true
+            oreVein:
+              type: object
+              additionalProperties: true
+            freeMine:
+              type: object
+              additionalProperties: true
+        portfolio:
+          type: object
+          required:
+            - blockNumber
+            - nativeBalance
+            - balances
+            - aave
+            - uniswap
+          properties:
+            blockNumber:
+              type: integer
+              description: Совпадает с block.number.
+            nativeBalance:
+              type: object
+              additionalProperties: true
+            balances:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            aave:
+              type: object
+              additionalProperties: true
+            uniswap:
+              type: object
+              additionalProperties: true
+    PublicStateView:
+      type: object
+      required:
+        - source
+        - cached
+        - ageSeconds
+        - behindConfirmedTransactions
+        - snapshot
+      properties:
+        source:
+          type: string
+          enum:
+            - public-server
+        cached:
+          type: boolean
+          description: Последняя попытка чтения снимка неуспешна; возвращён снимок из памяти. Ошибка отдельного запроса refresh не делает успешно прочитанный снимок кешированным.
+        ageSeconds:
+          type: integer
+          minimum: 0
+          description: Возраст блока снимка в секундах относительно времени управляющего.
+        behindConfirmedTransactions:
+          type: boolean
+          description: Блок снимка меньше максимального известного блока receipt; управляющий продолжает запрашивать обновление.
+        snapshot:
+          $ref: '#/components/schemas/PublicSnapshot'
+    PublicStateStatus:
+      type: object
+      required:
+        - available
+        - snapshotBlock
+        - requiredBlock
+        - refreshPending
+        - lastCheckedAt
+        - lastError
+      properties:
+        available:
+          type: boolean
+          description: Последнее чтение снимка успешно. Ошибка запроса refresh отражается в lastError, но не меняет доступность чтения.
+        snapshotBlock:
+          type: integer
+          nullable: true
+          description: Блок последнего загруженного снимка; null до первого снимка.
+        requiredBlock:
+          type: integer
+          nullable: true
+          description: Минимальный номер блока по известным receipts; null, если подтверждённые операции ещё неизвестны.
+        refreshPending:
+          type: boolean
+          description: Снимок ещё не достиг requiredBlock. Это признак отставания, а не статус фонового процесса основного сервера.
+        lastCheckedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Unix milliseconds окончания последней попытки; null до первой попытки.
+        lastError:
+          type: object
+          nullable: true
+          required:
+            - code
+          properties:
+            code:
+              type: string
+            reason:
+              type: string
+    JournalStatus:
+      type: object
+      required:
+        - connected
+        - pending
+        - blocked
+        - historyLoaded
+      properties:
+        connected:
+          type: boolean
+          description: Последняя попытка синхронизации журнала успешно обратилась к основному серверу.
+        pending:
+          type: integer
+          minimum: 0
+          description: Число операций с изменениями, ещё не подтверждёнными основным сервером.
+        blocked:
+          type: boolean
+          description: Исполнение заблокировано из-за конфликта или некорректных данных журнала; локальная очередь сохранена для разбора.
+        historyLoaded:
+          type: boolean
+          description: Полная история владельца хотя бы раз загружена с основного сервера в этом процессе. false означает, что доступные локальные записи могут быть неполными.
+        lastError:
+          $ref: '#/components/schemas/PublicError'
+    Synchronization:
+      type: object
+      required:
+        - journal
+        - state
+      properties:
+        journal:
+          $ref: '#/components/schemas/JournalStatus'
+        state:
+          $ref: '#/components/schemas/PublicStateStatus'
     Balances:
       type: object
       required:
@@ -2017,35 +2476,39 @@ components:
                     $ref: '#/components/schemas/UInt'
     Position:
       type: object
+      description: tokenA и tokenB следуют контрактному порядку адресов token0/token1; NFT не хранит исходный порядок из запроса mint. Цены выражены в tokenB за tokenA. Для increase поля amount0/amount1 соответствуют tokenA/tokenB этой записи.
       required:
         - tokenId
-        - token0
-        - token1
+        - tokenA
+        - tokenB
         - fee
-        - tickLower
-        - tickUpper
         - liquidity
-        - tokensOwed0
-        - tokensOwed1
+        - tokensOwedA
+        - tokensOwedB
+        - currentPrice
+        - inRange
+        - range
       properties:
         tokenId:
           $ref: '#/components/schemas/Id'
-        token0:
+        tokenA:
           $ref: '#/components/schemas/Token'
-        token1:
+        tokenB:
           $ref: '#/components/schemas/Token'
         fee:
           type: integer
-        tickLower:
-          type: integer
-        tickUpper:
-          type: integer
         liquidity:
           $ref: '#/components/schemas/UInt'
-        tokensOwed0:
+        tokensOwedA:
           $ref: '#/components/schemas/UInt'
-        tokensOwed1:
+        tokensOwedB:
           $ref: '#/components/schemas/UInt'
+        currentPrice:
+          $ref: '#/components/schemas/Decimal'
+        inRange:
+          type: boolean
+        range:
+          $ref: '#/components/schemas/PriceRange'
     PositionError:
       type: object
       required:
