@@ -18,28 +18,35 @@ const terminal = (operation: Operation) =>
   operation.status === 'succeeded' || operation.status === 'failed'
 
 export class Operations {
-  private working = false
   private stopped = true
   private abort = new AbortController()
   private task?: Promise<void>
   private listeners = new Set<(operation: OperationView) => void>()
-  fatal = false
+  private failed = false
+  private unsubscribeJournal?: () => void
 
   constructor(
     private readonly journal: Journal,
     private chain: TransactionTransport,
     private pollMs: number,
   ) {}
+  get fatal(): boolean {
+    return this.failed || this.journal.isBlocked
+  }
   start(): void {
-    if (this.chain.readOnly) {
+    if (this.chain.readOnly || !this.stopped) {
       return
     }
+    this.abort = new AbortController()
     this.stopped = false
+    this.unsubscribeJournal ??= this.journal.subscribe(() => this.kick())
     this.kick()
   }
   async stop(): Promise<void> {
     this.stopped = true
     this.abort.abort()
+    this.unsubscribeJournal?.()
+    this.unsubscribeJournal = undefined
     await this.task
   }
   subscribe(listener: (operation: OperationView) => void): () => void {
@@ -77,6 +84,7 @@ export class Operations {
     if (this.chain.readOnly) {
       throw new AppError('READ_ONLY', 403)
     }
+    this.journal.assertWritable()
     const existing = this.existing(requestId, preview.id)
     if (existing) {
       return existing
@@ -112,10 +120,8 @@ export class Operations {
       }),
     }
     this.publish(operation)
-    // Отдаём клиенту queued до запуска первого асинхронного шага.
-    const result = operationView(operation)
-    queueMicrotask(() => this.kick())
-    return result
+    this.kick()
+    return operationView(operation)
   }
   private publish(operation: Operation): void {
     operation.version++
@@ -123,7 +129,7 @@ export class Operations {
     try {
       this.journal.save(operation)
     } catch (error) {
-      this.fatal = true
+      this.failed = true
       throw error
     }
     for (const listener of this.listeners) {
@@ -135,16 +141,16 @@ export class Operations {
     }
   }
   private kick(): void {
-    if (this.working || this.stopped || this.fatal) {
+    if (this.task || this.stopped || this.fatal) {
       return
     }
-    this.working = true
-    this.task = this.drain()
+    this.task = Promise.resolve()
+      .then(() => this.drain())
       .catch(() => {
-        this.fatal = true
+        this.failed = true
       })
       .finally(() => {
-        this.working = false
+        this.task = undefined
         if (this.journal.all().some(operation => !terminal(operation))) {
           this.kick()
         }
@@ -152,7 +158,13 @@ export class Operations {
   }
   private async drain(): Promise<void> {
     while (!this.stopped && !this.fatal) {
-      const operation = this.journal.all().find(value => !terminal(value))
+      const pending = this.journal.all().filter(value => !terminal(value))
+      // A recovered signature already owns its nonce. Finish it before starting
+      // a queued operation, including after an offline restart.
+      const operation =
+        pending.find(value =>
+          value.steps.some(step => step.signed && !step.receipt),
+        ) ?? pending[0]
       if (!operation) {
         return
       }
@@ -184,6 +196,7 @@ export class Operations {
           await this.chain.validate(operation.guards)
           step.status = 'signing'
           this.publish(operation)
+          this.journal.assertWritable()
           const signed = await this.chain.sign(
             step.call,
             BigInt(operation.maxGasWei) - BigInt(operation.gasSpentWei),
@@ -280,6 +293,9 @@ export class Operations {
           return receipt
         }
         const nonce = await this.chain.nonce()
+        if (this.stopped || this.fatal || terminal(operation) || step.receipt) {
+          return null
+        }
         if (nonce > signed.nonce || operation.expiresAt <= Date.now()) {
           return {
             code:
@@ -292,6 +308,7 @@ export class Operations {
         if (Date.now() - lastBroadcast >= Math.max(15000, this.pollMs)) {
           lastBroadcast = Date.now()
           try {
+            this.journal.assertWritable()
             await this.chain.broadcast(signed.raw)
           } catch {
             /* Ответ RPC мог потеряться после приёма. */
@@ -342,6 +359,7 @@ export class Operations {
     if (this.chain.readOnly) {
       throw new AppError('READ_ONLY', 403)
     }
+    this.journal.assertWritable()
     const operation = this.journal.get(id)
     ensure(operation && !terminal(operation), 'OPERATION_NOT_PENDING')
     const step = operation.steps.find(
@@ -349,6 +367,7 @@ export class Operations {
     )
     ensure(step?.signed, 'TRANSACTION_NOT_PENDING')
     const result = await this.chain.replacement(transactionHash, step.signed)
+    this.journal.assertWritable()
     ensure(!terminal(operation) && !step.receipt, 'OPERATION_ALREADY_RESOLVED')
     step.receipt = result.receipt
     if (!result.matches) {

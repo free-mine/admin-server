@@ -1,20 +1,16 @@
 import { MaxUint256, ZeroAddress } from 'ethers'
 
+import type { AaveAction } from './types.js'
 import { approvalSteps } from '../chain/index.js'
-import type { Action } from '../requests/index.js'
 import { amount, ensure } from '../shared/index.js'
 import type { Plan, Chain } from '../chain/index.js'
 import { tokens, addresses } from '../config/index.js'
 import { poolAbi, erc20Abi } from '../contracts/index.js'
 
-export async function prepareAave(chain: Chain, action: Action): Promise<Plan> {
-  ensure(
-    action.kind === 'aave.supply' ||
-      action.kind === 'aave.withdraw' ||
-      action.kind === 'aave.borrow' ||
-      action.kind === 'aave.repay',
-    'UNSUPPORTED_ACTION',
-  )
+export async function prepareAave(
+  chain: Chain,
+  action: AaveAction,
+): Promise<Plan> {
   const token = await chain.token(action.params.token)
   const pool = chain.contract(addresses.aave, poolAbi)
   const reserve = await pool.getReserveData(token.address)
@@ -82,7 +78,7 @@ export async function prepareAave(chain: Chain, action: Action): Promise<Plan> {
       interestRateMode: 2,
     },
     steps: [
-      ...(await approvalSteps(chain, approvals)),
+      ...approvalSteps(chain, approvals),
       {
         code: 'EXECUTE',
         call: chain.execute(addresses.aave, poolAbi, method, args),

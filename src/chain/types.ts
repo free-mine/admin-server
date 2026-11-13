@@ -11,12 +11,28 @@ export interface Approval {
   amount: string
   spender: string
 }
-export interface Guard {
-  method: string
-  args: string[]
-  expected: string
-  contract: 'oreVein' | 'freeMine'
-}
+export type Guard =
+  | {
+      method: string
+      args: string[]
+      expected: string
+      contract: 'oreVein' | 'freeMine'
+    }
+  | {
+      fee: number
+      token0: string
+      token1: string
+      budget0: string
+      budget1: string
+      tickLower: number
+      tickUpper: number
+      amount0Desired: string
+      amount1Desired: string
+      contract: 'uniswapPool'
+      minimumSqrtPriceX96: string
+      maximumSqrtPriceX96: string
+      initialSqrtPriceX96?: string
+    }
 export type PlannedStep = { call: Call } & (
   | { code: 'EXECUTE'; approval?: never }
   | { approval: Approval; code: 'ALLOWANCE_APPROVE' }

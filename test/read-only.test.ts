@@ -12,6 +12,8 @@ import { temporary } from './helpers.js'
 import { Chain } from '../src/chain/index.js'
 import { createServer } from '../src/http/index.js'
 import { Successors } from '../src/successors/index.js'
+import { PublicState } from '../src/public-state/index.js'
+import { PublicServer } from '../src/public-server/index.js'
 import { Journal, Previews, Operations } from '../src/operations/index.js'
 import { erc20Abi, oreVeinAbi, freeMineAbi } from '../src/contracts/index.js'
 import { tokens, CHAIN_ID, addresses, readConfig } from '../src/config/index.js'
@@ -122,22 +124,27 @@ for (const [label, key] of [
 ] as const) {
   test(`read only with ${label}: reads and previews work without transactions`, async t => {
     const { url, calls, state } = await rpc(t)
-    const config = readConfig({ RPC_URL: url, PRIVATE_KEY: key })
+    const config = readConfig({
+      RPC_URL: url,
+      PRIVATE_KEY: key,
+      PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
+    })
     const chain = await Chain.connect(config)
     t.after(() => chain.dispose())
     assert.equal(chain.owner, owner)
     assert.equal(chain.readOnly, true)
-    const operations = new Operations(
-      new Journal(temporary(t), chain.owner, chain.readOnly),
-      chain,
-      5,
-    )
+    const journal = new Journal(temporary(t), chain.owner, chain.readOnly)
+    const operations = new Operations(journal, chain, 5)
     operations.start()
     t.after(() => operations.stop())
     const app = createServer({
       config,
       chain,
       operations,
+      journal,
+      publicState: new PublicState(
+        new PublicServer({ url: config.publicServerUrl, timeoutMs: 100 }),
+      ),
       previews: new Previews(chain, config.previewTtlSeconds),
       successors: new Successors(chain, config),
     })
@@ -214,7 +221,11 @@ for (const [label, key] of [
 test('the owner key enables signing and sending; ownership is rechecked before sending', async t => {
   const { url, calls, state } = await rpc(t)
   const chain = await Chain.connect(
-    readConfig({ RPC_URL: url, PRIVATE_KEY: ownerKey }),
+    readConfig({
+      RPC_URL: url,
+      PRIVATE_KEY: ownerKey,
+      PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
+    }),
   )
   t.after(() => chain.dispose())
   assert.equal(chain.readOnly, false)
@@ -239,7 +250,12 @@ test('the owner key enables signing and sending; ownership is rechecked before s
 test('read only still rejects a wrong RPC network', async t => {
   const { url, state } = await rpc(t)
   state.chainId = 1
-  await assert.rejects(Chain.connect(readConfig({ RPC_URL: url })), {
-    code: 'WRONG_NETWORK',
-  })
+  await assert.rejects(
+    Chain.connect(
+      readConfig({ RPC_URL: url, PUBLIC_SERVER_URL: 'http://127.0.0.1:18546' }),
+    ),
+    {
+      code: 'WRONG_NETWORK',
+    },
+  )
 })

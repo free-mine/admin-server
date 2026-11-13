@@ -22,10 +22,10 @@ export async function canSkipApproval(
   return current >= BigInt(step.approval.amount)
 }
 
-export async function approvalSteps(
+export function approvalSteps(
   chain: Chain,
   approvals: Approval[],
-): Promise<PlannedStep[]> {
+): PlannedStep[] {
   const steps: PlannedStep[] = []
   for (const approval of approvals) {
     const required = BigInt(approval.amount)

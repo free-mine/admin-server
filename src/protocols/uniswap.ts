@@ -1,4 +1,5 @@
-import { ZeroAddress } from 'ethers'
+import type { Contract } from 'ethers'
+import { Interface, ZeroAddress } from 'ethers'
 
 import type { Position } from './types.js'
 import { addresses } from '../config/index.js'
@@ -20,13 +21,17 @@ import {
   minimumAmount,
 } from '../shared/index.js'
 import {
-  usableTicks,
-  validateTicks,
+  formatRatio,
+  selectRange,
+  describeRange,
   sqrtRatioAtTick,
   encodeInitialPrice,
+  boundaryPriceBounds,
   amountsForLiquidity,
   mintAmountsWithSlippage,
-} from './uniswap-math.js'
+} from '../liquidity/index.js'
+
+const managerInterface = new Interface(positionManagerAbi)
 
 async function contracts(chain: Chain) {
   const manager = chain.contract(
@@ -42,36 +47,32 @@ async function contracts(chain: Chain) {
     factory: chain.contract(addresses.uniswapFactory, uniswapFactoryAbi),
   }
 }
-async function poolState(
+async function poolPrice(
   chain: Chain,
+  factory: Contract,
   token0: Token,
   token1: Token,
   fee: number,
 ) {
-  const { factory } = await contracts(chain)
   const address: string = await factory.getPool(
     token0.address,
     token1.address,
     fee,
   )
   if (sameAddress(address, ZeroAddress)) {
-    return { address, price: 0n }
+    return 0n
   }
   const slot = await chain.contract(address, uniswapPoolAbi).slot0()
-  return { address, price: BigInt(slot.sqrtPriceX96) }
+  return BigInt(slot.sqrtPriceX96)
 }
 function batch(chain: Chain, calls: [string, unknown[]][]): Call {
-  const manager = chain.contract(
-    addresses.uniswapPositionManager,
-    positionManagerAbi,
-  )
   return chain.execute(
     addresses.uniswapPositionManager,
     positionManagerAbi,
     'multicall',
     [
       calls.map(([method, args]) =>
-        manager.interface.encodeFunctionData(method, args),
+        managerInterface.encodeFunctionData(method, args),
       ),
     ],
   )
@@ -88,8 +89,11 @@ const approve = (token: Token, value: bigint) => ({
   amount: value.toString(),
 })
 
-async function readPosition(chain: Chain, id: string): Promise<Position> {
-  const { manager } = await contracts(chain)
+async function readPosition(
+  chain: Chain,
+  manager: Contract,
+  id: string,
+): Promise<Position> {
   const [owner, position] = await Promise.all([
     manager.ownerOf(id),
     manager.positions(id),
@@ -112,7 +116,7 @@ async function readPosition(chain: Chain, id: string): Promise<Position> {
   }
 }
 export async function listPositions(chain: Chain, offset = 0, limit = 20) {
-  const { manager } = await contracts(chain)
+  const { manager, factory } = await contracts(chain)
   const count = BigInt(await manager.balanceOf(addresses.oreVein))
   const positions = []
   for (let i = BigInt(offset); i < count && i < BigInt(offset + limit); i++) {
@@ -120,13 +124,30 @@ export async function listPositions(chain: Chain, offset = 0, limit = 20) {
       await manager.tokenOfOwnerByIndex(addresses.oreVein, i),
     )
     try {
-      const value = await readPosition(chain, tokenId)
+      const value = await readPosition(chain, manager, tokenId)
+      const price = await poolPrice(
+        chain,
+        factory,
+        value.token0,
+        value.token1,
+        value.fee,
+      )
+      ensure(price > 0n, 'POOL_NOT_INITIALIZED')
       positions.push({
-        ...value,
         tokenId,
+        tokenA: value.token0,
+        tokenB: value.token1,
+        fee: value.fee,
         liquidity: value.liquidity.toString(),
-        tokensOwed0: value.tokensOwed0.toString(),
-        tokensOwed1: value.tokensOwed1.toString(),
+        tokensOwedA: value.tokensOwed0.toString(),
+        tokensOwedB: value.tokensOwed1.toString(),
+        ...describeRange(
+          price,
+          value.tickLower,
+          value.tickUpper,
+          value.token0,
+          value.token1,
+        ),
       })
     } catch (error) {
       positions.push({ tokenId, error: publicError(error) })
@@ -152,27 +173,33 @@ export async function prepareMint(
   const [token0, token1] = sorted ? [tokenA, tokenB] : [tokenB, tokenA]
   const [budget0, budget1] = sorted ? [amountA, amountB] : [amountB, amountA]
   const spacing = Number(await factory.feeAmountTickSpacing(params.fee))
-  const [tickLower, tickUpper] =
-    params.range === 'full'
-      ? usableTicks(spacing)
-      : [params.tickLower, params.tickUpper]
-  ensure(tickLower !== undefined && tickUpper !== undefined, 'INVALID_TICK')
-  validateTicks(tickLower, tickUpper, spacing)
-  const pool = await poolState(chain, token0, token1, params.fee)
-  const initialize = pool.price === 0n
-  let price = pool.price
+  let price = await poolPrice(chain, factory, token0, token1, params.fee)
+  const initialize = price === 0n
   if (initialize) {
     ensure(params.initialPrice, 'INITIAL_PRICE_REQUIRED')
     price = encodeInitialPrice(params.initialPrice, tokenA, tokenB)
   }
-  const preview = mintAmountsWithSlippage(
+  const preview = selectRange({
     price,
-    tickLower,
-    tickUpper,
-    budget0,
-    budget1,
-    params.slippageBps,
-  )
+    spacing,
+    amount0: budget0,
+    amount1: budget1,
+    baseIsToken0: sorted,
+    minBoundaryPercent: params.minBoundaryPercent,
+    slippageBps: params.slippageBps,
+  })
+  const { tickLower, tickUpper } = preview
+  // The manager enforces near-total use even if the price changes after signing.
+  const utilizationMinimum0 = (budget0 * 99n + 99n) / 100n
+  const utilizationMinimum1 = (budget1 * 99n + 99n) / 100n
+  const amount0Min =
+    preview.amount0Min > utilizationMinimum0
+      ? preview.amount0Min
+      : utilizationMinimum0
+  const amount1Min =
+    preview.amount1Min > utilizationMinimum1
+      ? preview.amount1Min
+      : utilizationMinimum1
   await Promise.all([
     chain.assertBalance(token0, preview.amount0Desired),
     chain.assertBalance(token1, preview.amount1Desired),
@@ -195,35 +222,76 @@ export async function prepareMint(
         tickUpper,
         amount0Desired: preview.amount0Desired,
         amount1Desired: preview.amount1Desired,
-        amount0Min: preview.amount0Min,
-        amount1Min: preview.amount1Min,
+        amount0Min,
+        amount1Min,
         recipient: addresses.oreVein,
         deadline,
       },
     ],
   ])
+  const [desiredA, desiredB] = sorted
+    ? [preview.amount0Desired, preview.amount1Desired]
+    : [preview.amount1Desired, preview.amount0Desired]
+  const [expectedA, expectedB] = sorted
+    ? [preview.expected0, preview.expected1]
+    : [preview.expected1, preview.expected0]
+  const [minimumA, minimumB] = sorted
+    ? [amount0Min, amount1Min]
+    : [amount1Min, amount0Min]
   return {
-    guards: [],
+    guards: [
+      {
+        contract: 'uniswapPool',
+        token0: token0.address,
+        token1: token1.address,
+        fee: params.fee,
+        tickLower,
+        tickUpper,
+        budget0: budget0.toString(),
+        budget1: budget1.toString(),
+        amount0Desired: preview.amount0Desired.toString(),
+        amount1Desired: preview.amount1Desired.toString(),
+        ...boundaryPriceBounds(
+          tickLower,
+          tickUpper,
+          params.minBoundaryPercent,
+          sorted,
+        ),
+        ...(initialize ? { initialSqrtPriceX96: price.toString() } : {}),
+      },
+    ],
     summary: {
-      token0: token0.symbol,
-      token1: token1.symbol,
+      tokenA: tokenA.symbol,
+      tokenB: tokenB.symbol,
+      decimalsA: tokenA.decimals,
+      decimalsB: tokenB.decimals,
       fee: params.fee,
-      tickLower,
-      tickUpper,
+      minBoundaryPercent: params.minBoundaryPercent,
+      minimumUtilizationPercent: '99',
+      ...describeRange(price, tickLower, tickUpper, tokenA, tokenB),
       initialize,
-      sqrtPriceX96: price.toString(),
-      maximum0: preview.amount0Desired.toString(),
-      maximum1: preview.amount1Desired.toString(),
-      minimum0: preview.amount0Min.toString(),
-      minimum1: preview.amount1Min.toString(),
+      amounts: {
+        budgetA: amountA.toString(),
+        budgetB: amountB.toString(),
+        desiredA: desiredA.toString(),
+        desiredB: desiredB.toString(),
+        expectedA: expectedA.toString(),
+        expectedB: expectedB.toString(),
+        minimumA: minimumA.toString(),
+        minimumB: minimumB.toString(),
+        leftoverA: (amountA - expectedA).toString(),
+        leftoverB: (amountB - expectedB).toString(),
+        utilizationPercentA: formatRatio(expectedA * 100n, amountA, 6),
+        utilizationPercentB: formatRatio(expectedB * 100n, amountB, 6),
+      },
       deadline,
       recipient: addresses.oreVein,
     },
     steps: [
-      ...(await approvalSteps(chain, [
+      ...approvalSteps(chain, [
         approve(token0, preview.amount0Desired),
         approve(token1, preview.amount1Desired),
-      ])),
+      ]),
       { code: 'EXECUTE', call: batch(chain, calls) },
     ],
   }
@@ -233,12 +301,13 @@ export async function prepareIncrease(
   params: Params<'uniswap.increase'>,
   deadline: number,
 ): Promise<Plan> {
-  const position = await readPosition(chain, params.tokenId)
+  const { manager, factory } = await contracts(chain)
+  const position = await readPosition(chain, manager, params.tokenId)
   const { tokenId, token0, token1, fee, tickLower, tickUpper } = position
-  const pool = await poolState(chain, token0, token1, fee)
-  ensure(pool.price > 0n, 'POOL_NOT_INITIALIZED')
+  const price = await poolPrice(chain, factory, token0, token1, fee)
+  ensure(price > 0n, 'POOL_NOT_INITIALIZED')
   const preview = mintAmountsWithSlippage(
-    pool.price,
+    price,
     tickLower,
     tickUpper,
     amount(params.amount0, token0.decimals, true),
@@ -266,10 +335,10 @@ export async function prepareIncrease(
       deadline,
     },
     steps: [
-      ...(await approvalSteps(chain, [
+      ...approvalSteps(chain, [
         approve(token0, preview.amount0Desired),
         approve(token1, preview.amount1Desired),
-      ])),
+      ]),
       {
         code: 'EXECUTE',
         call: chain.execute(
@@ -295,7 +364,8 @@ export async function prepareCollect(
   chain: Chain,
   params: Params<'uniswap.collect'>,
 ): Promise<Plan> {
-  const position = await readPosition(chain, params.tokenId)
+  const { manager } = await contracts(chain)
+  const position = await readPosition(chain, manager, params.tokenId)
   return {
     guards: [],
     summary: { tokenId: params.tokenId, recipient: addresses.oreVein },
@@ -317,17 +387,18 @@ export async function prepareClose(
   params: Params<'uniswap.close'>,
   deadline: number,
 ): Promise<Plan> {
-  const position = await readPosition(chain, params.tokenId)
+  const { manager, factory } = await contracts(chain)
+  const position = await readPosition(chain, manager, params.tokenId)
   const { tokenId, token0, token1, fee, tickLower, tickUpper, liquidity } =
     position
   const calls: [string, unknown[]][] = []
   let minimum0 = 0n,
     minimum1 = 0n
   if (liquidity > 0n) {
-    const pool = await poolState(chain, token0, token1, fee)
-    ensure(pool.price > 0n, 'POOL_NOT_INITIALIZED')
+    const price = await poolPrice(chain, factory, token0, token1, fee)
+    ensure(price > 0n, 'POOL_NOT_INITIALIZED')
     const [amount0, amount1] = amountsForLiquidity(
-      pool.price,
+      price,
       sqrtRatioAtTick(tickLower),
       sqrtRatioAtTick(tickUpper),
       liquidity,
@@ -366,7 +437,8 @@ export async function prepareBurn(
   chain: Chain,
   params: Params<'uniswap.burn'>,
 ): Promise<Plan> {
-  const position = await readPosition(chain, params.tokenId)
+  const { manager } = await contracts(chain)
+  const position = await readPosition(chain, manager, params.tokenId)
   ensure(
     position.liquidity === 0n &&
       position.tokensOwed0 === 0n &&

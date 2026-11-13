@@ -3,17 +3,11 @@ import { AppError } from '../shared/index.js'
 import type { Token } from '../config/index.js'
 
 export const Q96 = 1n << 96n
-export const MIN_TICK = TickMath.MIN_TICK
-export const MAX_TICK = TickMath.MAX_TICK
+const MIN_TICK = TickMath.MIN_TICK
+const MAX_TICK = TickMath.MAX_TICK
 const MAX_LIQUIDITY = (1n << 128n) - 1n
 
-// TickMath взят из официального SDK, денежные расчёты ниже используют только bigint.
-export const sqrtRatioAtTick = (tick: number) => {
-  if (!Number.isInteger(tick) || tick < MIN_TICK || tick > MAX_TICK) {
-    throw new AppError('INVALID_TICK')
-  }
-  return BigInt(TickMath.getSqrtRatioAtTick(tick).toString())
-}
+export const sqrtRatioAtTick = TickMath.getSqrtRatioAtTick
 
 export const usableTicks = (spacing: number): [number, number] => {
   if (!Number.isInteger(spacing) || spacing <= 0 || spacing > MAX_TICK) {
@@ -25,26 +19,7 @@ export const usableTicks = (spacing: number): [number, number] => {
   ]
 }
 
-export const validateTicks = (
-  lower: number,
-  upper: number,
-  spacing: number,
-) => {
-  const [minimum, maximum] = usableTicks(spacing)
-  if (
-    !Number.isInteger(lower) ||
-    !Number.isInteger(upper) ||
-    lower < minimum ||
-    upper > maximum ||
-    lower >= upper ||
-    lower % spacing !== 0 ||
-    upper % spacing !== 0
-  ) {
-    throw new AppError('INVALID_TICK')
-  }
-}
-
-const sqrt = (value: bigint): bigint => {
+export const sqrt = (value: bigint): bigint => {
   if (value < 0n) {
     throw new AppError('INVALID_SQUARE_ROOT')
   }
@@ -91,31 +66,25 @@ export const encodeInitialPrice = (
     ;[numerator, denominator] = [denominator, numerator]
   }
   const ratio = sqrt((numerator << 192n) / denominator)
-  if (
-    ratio < BigInt(TickMath.MIN_SQRT_RATIO.toString()) ||
-    ratio >= BigInt(TickMath.MAX_SQRT_RATIO.toString())
-  ) {
+  if (ratio < TickMath.MIN_SQRT_RATIO || ratio >= TickMath.MAX_SQRT_RATIO) {
     throw new AppError('INITIAL_PRICE_RANGE')
   }
   return ratio
 }
 
-// Десятичная цена для предпросмотра; транзакция всегда использует исходное Q64.96.
-export const formatPoolPrice = (
-  sqrtPriceX96: bigint,
-  token0: Token,
-  token1: Token,
+export const formatRatio = (
+  numerator: bigint,
+  denominator: bigint,
+  places = Math.max(
+    24,
+    24 + denominator.toString().length - numerator.toString().length,
+  ),
 ) => {
-  const numerator = sqrtPriceX96 * sqrtPriceX96 * 10n ** BigInt(token0.decimals)
-  const denominator = (1n << 192n) * 10n ** BigInt(token1.decimals)
-  const scale = 10n ** 24n
+  const scale = 10n ** BigInt(places)
   const scaled = (numerator * scale) / denominator
-  if (scaled === 0n) {
-    return '<0.000000000000000000000001'
-  }
   const fraction = (scaled % scale)
     .toString()
-    .padStart(24, '0')
+    .padStart(places, '0')
     .replace(/0+$/, '')
   return `${scaled / scale}${fraction ? `.${fraction}` : ''}`
 }
@@ -174,6 +143,26 @@ export const liquidityForAmounts = (
   return liquidity
 }
 
+export const mintAmountsAtPrice = (
+  price: bigint,
+  tickLower: number,
+  tickUpper: number,
+  amount0: bigint,
+  amount1: bigint,
+) => {
+  const lower = sqrtRatioAtTick(tickLower)
+  const upper = sqrtRatioAtTick(tickUpper)
+  const liquidity = liquidityForAmounts(price, lower, upper, amount0, amount1)
+  const [expected0, expected1] = amountsForLiquidity(
+    price,
+    lower,
+    upper,
+    liquidity,
+    true,
+  )
+  return { liquidity, expected0, expected1 }
+}
+
 // Как Position.mintAmountsWithSlippage в официальном SDK: убираем излишек
 // бюджетов, затем считаем минимумы на границах допустимого изменения цены.
 // Расчёт не зависит от статического списка fee tiers в SDK Pool.
@@ -222,8 +211,8 @@ export const mintAmountsWithSlippage = (
   )
   let priceLower = sqrt((price * price * BigInt(10000 - slippageBps)) / 10000n)
   let priceUpper = sqrt((price * price * BigInt(10000 + slippageBps)) / 10000n)
-  const minimumPrice = BigInt(TickMath.MIN_SQRT_RATIO.toString())
-  const maximumPrice = BigInt(TickMath.MAX_SQRT_RATIO.toString()) - 1n
+  const minimumPrice = TickMath.MIN_SQRT_RATIO
+  const maximumPrice = TickMath.MAX_SQRT_RATIO - 1n
   if (priceLower < minimumPrice) {
     priceLower = minimumPrice
   }

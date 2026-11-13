@@ -4,6 +4,7 @@ import {
   Contract,
   Interface,
   Transaction,
+  ZeroAddress,
   formatEther,
   FetchRequest,
   JsonRpcProvider,
@@ -12,14 +13,9 @@ import {
 import type { Action } from '../requests/index.js'
 import type { JsonObject } from '../shared/index.js'
 import type { Token, Config } from '../config/index.js'
+import { mintAmountsAtPrice } from '../liquidity/index.js'
 import { tokens, CHAIN_ID, addresses } from '../config/index.js'
 import { ensure, AppError, sameAddress } from '../shared/index.js'
-import {
-  erc20Abi,
-  oreVeinAbi,
-  freeMineAbi,
-  positionManagerAbi,
-} from '../contracts/index.js'
 import type {
   Call,
   Guard,
@@ -28,6 +24,14 @@ import type {
   SignedTransaction,
   TransactionTransport,
 } from './types.js'
+import {
+  erc20Abi,
+  oreVeinAbi,
+  freeMineAbi,
+  uniswapPoolAbi,
+  uniswapFactoryAbi,
+  positionManagerAbi,
+} from '../contracts/index.js'
 
 const oreInterface = new Interface(oreVeinAbi)
 const tokenInterface = new Interface(erc20Abi)
@@ -181,6 +185,45 @@ export class Chain implements TransactionTransport {
   }
   async validate(guards: Guard[]): Promise<void> {
     for (const guard of guards) {
+      if (guard.contract === 'uniswapPool') {
+        const factory = this.contract(
+          addresses.uniswapFactory,
+          uniswapFactoryAbi,
+        )
+        const address: string = await factory.getPool(
+          guard.token0,
+          guard.token1,
+          guard.fee,
+        )
+        let price =
+          address === ZeroAddress
+            ? 0n
+            : BigInt(
+                (await this.contract(address, uniswapPoolAbi).slot0())
+                  .sqrtPriceX96,
+              )
+        if (price === 0n && guard.initialSqrtPriceX96 !== undefined) {
+          price = BigInt(guard.initialSqrtPriceX96)
+        }
+        ensure(
+          price >= BigInt(guard.minimumSqrtPriceX96) &&
+            price <= BigInt(guard.maximumSqrtPriceX96),
+          'PLAN_CHANGED',
+        )
+        const expected = mintAmountsAtPrice(
+          price,
+          guard.tickLower,
+          guard.tickUpper,
+          BigInt(guard.amount0Desired),
+          BigInt(guard.amount1Desired),
+        )
+        ensure(
+          expected.expected0 * 100n >= BigInt(guard.budget0) * 99n &&
+            expected.expected1 * 100n >= BigInt(guard.budget1) * 99n,
+          'PLAN_CHANGED',
+        )
+        continue
+      }
       const contract =
         guard.contract === 'oreVein' ? this.oreVein : this.freeMine
       const current = String(
