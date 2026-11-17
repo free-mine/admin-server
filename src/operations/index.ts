@@ -7,5 +7,4 @@ export type {
   Operation,
   JournalStatus,
   OperationView,
-  JournalTransactionStore,
 } from './types.js'

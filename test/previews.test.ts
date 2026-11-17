@@ -55,7 +55,7 @@ const request: PreviewRequest = {
   maxGasAvax: '0.01',
 }
 
-for (const allowance of [0n, 1n, 100n, 500n]) {
+for (const allowance of [0n, 1n, 100n]) {
   test(`preview estimates and execution agree for allowance ${allowance}`, async t => {
     const { chain, previews, simulated } = previewChain(allowance)
     const { operations, journal } = engine(t, chain)

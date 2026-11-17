@@ -31,7 +31,8 @@ import {
 
 // Адрес намеренно не читается из пользовательского окружения.
 const LOCAL_RPC = 'http://127.0.0.1:18545'
-const BASE = 'http://127.0.0.1:18080'
+const BASE = 'http://localhost:18080'
+const PANEL_PIN = '123456'
 const request = new FetchRequest(LOCAL_RPC)
 request.timeout = 600000
 const provider = new JsonRpcProvider(request, undefined, {
@@ -55,6 +56,7 @@ const docker = (...args: string[]) =>
     timeout: 60000,
   }).trim()
 const updates: OperationView[] = []
+let cookie = ''
 
 async function api<T = Record<string, unknown>>(
   path: string,
@@ -62,7 +64,7 @@ async function api<T = Record<string, unknown>>(
 ): Promise<T> {
   const response = await fetch(BASE + path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', cookie },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(180000),
   })
@@ -73,8 +75,23 @@ async function api<T = Record<string, unknown>>(
 async function waitReady() {
   for (let i = 0; i < 120; i++) {
     try {
+      const login = await fetch(`${BASE}/v1/session`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pin: PANEL_PIN }),
+        signal: AbortSignal.timeout(1000),
+      })
+      if (login.ok) {
+        cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]
+      }
       if (
-        (await fetch(`${BASE}/ready`, { signal: AbortSignal.timeout(1000) })).ok
+        login.ok &&
+        (
+          await fetch(`${BASE}/ready`, {
+            headers: { cookie },
+            signal: AbortSignal.timeout(1000),
+          })
+        ).ok
       ) {
         return
       }
@@ -227,7 +244,7 @@ try {
   // Временный ключ существует только в форке и не выводится в консоль.
   writeFileSync(
     envFile,
-    `RPC_URL=http://host.docker.internal:18545\nPUBLIC_SERVER_URL=http://host.docker.internal:18546\nPRIVATE_KEY=${owner.privateKey}\nPOLL_INTERVAL_MS=100\nPREVIEW_TTL_SECONDS=600\nRPC_TIMEOUT_MS=120000\nDEPLOYMENT_BLOCK=${startBlock}\n`,
+    `RPC_URL=http://host.docker.internal:18545\nALLOWED_DOMAIN=localhost\nPANEL_PIN=${PANEL_PIN}\nPRIVATE_KEY=${owner.privateKey}\nPOLL_INTERVAL_MS=100\nPREVIEW_TTL_SECONDS=600\nRPC_TIMEOUT_MS=120000\nDEPLOYMENT_BLOCK=${startBlock}\n`,
     { mode: 0o600 },
   )
   console.log('SETUP launch Docker container')
@@ -249,8 +266,9 @@ try {
   containerCreated = true
   await waitReady()
   assert.equal(docker('exec', containerName, 'id', '-u'), '1000')
-  socket = new WebSocket('ws://127.0.0.1:18080/v1/ws', {
+  socket = new WebSocket('ws://localhost:18080/v1/ws', {
     origin: 'http://localhost:5173',
+    headers: { cookie },
   })
   socket.on('message', data => {
     const event = JSON.parse(String(data)) as {
