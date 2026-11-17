@@ -7,13 +7,11 @@ export interface Config {
   host: string
   rpcUrl: string
   pollMs: number
+  panelPin: string
   privateKey?: string
   rpcTimeoutMs: number
+  allowedDomain: string
   logBlockRange: number
-  syncIntervalMs: number
-  publicServerUrl: string
   deploymentBlock?: number
-  publicServerKey?: string
   previewTtlSeconds: number
-  publicServerTimeoutMs: number
 }

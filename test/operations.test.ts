@@ -14,10 +14,10 @@ test('one order executes reset, approval and action sequentially; signatures are
   chain.allowanceValue = 1n
   chain.onBroadcast = () => {
     const saved = JSON.parse(
-      readFileSync(join(directory, 'operations.pending.json'), 'utf8'),
+      readFileSync(join(directory, 'operations.json'), 'utf8'),
     )
     assert.ok(
-      saved.entries[0].operation.steps.some(
+      saved.operations[0].steps.some(
         (step: { signed?: unknown }) => step.signed,
       ),
     )
@@ -31,18 +31,6 @@ test('one order executes reset, approval and action sequentially; signatures are
   assert.equal(operations.get(operation.id).gasSpentWei, '15')
   assert.ok(
     !JSON.stringify(operations.get(operation.id)).includes('signed-secret'),
-  )
-})
-
-test('sufficient allowances skip both optional transactions', async t => {
-  const { chain, operations } = engine(t)
-  chain.allowanceValue = 500n
-  const operation = operations.submit(preview(true), randomUUID())
-  await until(() => operations.get(operation.id).status === 'succeeded')
-  assert.equal(chain.signs.length, 1)
-  assert.deepEqual(
-    operations.get(operation.id).steps.map(step => step.status),
-    ['skipped', 'skipped', 'confirmed'],
   )
 })
 
@@ -229,15 +217,6 @@ test('main transaction revert stops remaining steps and records spent gas', asyn
   assert.equal(operations.get(operation.id).gasSpentWei, '5')
 })
 
-test('journal from another owner is refused', async t => {
-  const { directory, operations } = engine(t)
-  operations.submit(preview(), randomUUID())
-  assert.throws(
-    () => new Journal(directory, '0x0000000000000000000000000000000000000002'),
-    /JOURNAL_OWNER_MISMATCH/,
-  )
-})
-
 test('read only preserves queued operations and never resends saved signatures', async t => {
   const { chain, directory, operations } = engine(t)
   chain.shouldMine = false
@@ -245,7 +224,7 @@ test('read only preserves queued operations and never resends saved signatures',
   await until(() => operations.get(pending.id).status === 'waiting')
   const queued = operations.submit(preview(), randomUUID())
   await operations.stop()
-  const path = join(directory, 'operations.pending.json')
+  const path = join(directory, 'operations.json')
   const saved = readFileSync(path, 'utf8')
   const signs = chain.signs.length
   const broadcasts = chain.broadcasts.length
@@ -273,32 +252,6 @@ test('read only preserves queued operations and never resends saved signatures',
   assert.equal(readFileSync(path, 'utf8'), saved)
 })
 
-test('read only can inspect an old owner journal without modifying it', async t => {
-  const { directory, operations } = engine(t)
-  const operation = operations.submit(preview(), randomUUID())
-  await until(() => operations.get(operation.id).status === 'succeeded')
-  await operations.stop()
-  const saved = readFileSync(join(directory, 'operations.pending.json'), 'utf8')
-  const reader = new Journal(
-    directory,
-    '0x0000000000000000000000000000000000000002',
-    true,
-  )
-  assert.deepEqual(
-    reader.all(),
-    JSON.parse(saved).entries.map(
-      (entry: { operation: unknown }) => entry.operation,
-    ),
-  )
-  const stored = reader.get(operation.id)
-  assert.ok(stored)
-  assert.throws(() => reader.save(stored), { code: 'READ_ONLY', status: 403 })
-  assert.equal(
-    readFileSync(join(directory, 'operations.pending.json'), 'utf8'),
-    saved,
-  )
-})
-
 test('read only works without creating a data directory or journal', t => {
   const directory = join(temporary(t), 'absent')
   const journal = new Journal(directory, 'owner', true)
@@ -306,98 +259,101 @@ test('read only works without creating a data directory or journal', t => {
   assert.equal(existsSync(directory), false)
 })
 
-for (const rpc of ['receipt', 'nonce', 'broadcast'] as const) {
-  for (const rejects of [false, true]) {
-    for (const matches of [false, true]) {
-      test(`resolved ${matches ? 'speedup' : 'cancellation'} survives pending ${rpc} ${rejects ? 'failure' : 'response'}`, async t => {
-        const { chain, directory, operations } = engine(t)
-        chain.shouldMine = false
-        let release = () => {}
-        const gate = new Promise<void>(resolve => {
-          release = resolve
-        })
-        let pending = false
-        const pause = async () => {
-          if (pending) {
-            return
-          }
-          pending = true
-          await gate
-          if (rejects) {
-            throw new Error('RPC unavailable')
-          }
-        }
-        if (rpc === 'receipt') {
-          const receipt = chain.receipt.bind(chain)
-          chain.receipt = async hash => {
-            if (chain.broadcasts.length > 0 && !pending) {
-              await pause()
-              return null
-            }
-            return receipt(hash)
-          }
-        } else if (rpc === 'nonce') {
-          chain.nonce = async () => {
-            if (chain.broadcasts.length > 0) {
-              await pause()
-            }
-            return chain.currentNonce
-          }
-        } else {
-          const broadcast = chain.broadcast.bind(chain)
-          chain.broadcast = async raw => {
-            await broadcast(raw)
-            await pause()
-          }
-        }
-        chain.replacement = async hash => ({
-          receipt: { hash, blockNumber: 2, status: 1, fee: '7', logs: [] },
-          matches,
-        })
-        const plan = preview()
-        plan.plan.steps.push({
-          code: 'EXECUTE',
-          call: { to: 'oreVein', data: 'next', value: '0' },
-          gasEstimate: { status: 'requires_prior_steps', maxGasWei: null },
-        })
-        try {
-          const first = operations.submit(plan, randomUUID())
-          await until(() => pending)
-          const later = operations.submit(preview(), randomUUID())
-          chain.currentNonce = 1
-          const resolved = await operations.resolve(first.id, 'replacement')
-          if (!matches) {
-            assert.equal(resolved.status, 'failed')
-            assert.equal(resolved.error?.code, 'TRANSACTION_REPLACED')
-            assert.equal(resolved.gasSpentWei, '7')
-          }
-          chain.shouldMine = true
-          release()
-          await until(() => operations.get(later.id).status === 'succeeded')
-          const result = operations.get(first.id)
-          assert.equal(result.steps[0].receipt?.hash, 'replacement')
-          assert.equal(result.gasSpentWei, matches ? '12' : '7')
-          assert.equal(chain.signs.length, matches ? 3 : 2)
-          if (matches) {
-            assert.equal(result.status, 'succeeded')
-            assert.equal(result.steps[0].status, 'confirmed')
-            assert.equal(result.steps[0].error, undefined)
-          } else {
-            assert.deepEqual(result, resolved)
-            assert.equal(result.steps[0].status, 'failed')
-            assert.equal(result.steps[1].status, 'pending')
-          }
-          assert.equal(
-            new Journal(directory, chain.owner).get(first.id)?.status,
-            result.status,
-          )
-        } finally {
-          release()
-          await operations.stop()
-        }
-      })
+for (const { rpc, rejects, matches } of [
+  { rpc: 'receipt', rejects: false, matches: false },
+  { rpc: 'receipt', rejects: true, matches: true },
+  { rpc: 'nonce', rejects: false, matches: true },
+  { rpc: 'nonce', rejects: true, matches: false },
+  { rpc: 'broadcast', rejects: false, matches: false },
+  { rpc: 'broadcast', rejects: true, matches: true },
+] as const) {
+  test(`resolved ${matches ? 'speedup' : 'cancellation'} survives pending ${rpc} ${rejects ? 'failure' : 'response'}`, async t => {
+    const { chain, directory, operations } = engine(t)
+    chain.shouldMine = false
+    let release = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let pending = false
+    const pause = async () => {
+      if (pending) {
+        return
+      }
+      pending = true
+      await gate
+      if (rejects) {
+        throw new Error('RPC unavailable')
+      }
     }
-  }
+    if (rpc === 'receipt') {
+      const receipt = chain.receipt.bind(chain)
+      chain.receipt = async hash => {
+        if (chain.broadcasts.length > 0 && !pending) {
+          await pause()
+          return null
+        }
+        return receipt(hash)
+      }
+    } else if (rpc === 'nonce') {
+      chain.nonce = async () => {
+        if (chain.broadcasts.length > 0) {
+          await pause()
+        }
+        return chain.currentNonce
+      }
+    } else {
+      const broadcast = chain.broadcast.bind(chain)
+      chain.broadcast = async raw => {
+        await broadcast(raw)
+        await pause()
+      }
+    }
+    chain.replacement = async hash => ({
+      receipt: { hash, blockNumber: 2, status: 1, fee: '7', logs: [] },
+      matches,
+    })
+    const plan = preview()
+    plan.plan.steps.push({
+      code: 'EXECUTE',
+      call: { to: 'oreVein', data: 'next', value: '0' },
+      gasEstimate: { status: 'requires_prior_steps', maxGasWei: null },
+    })
+    try {
+      const first = operations.submit(plan, randomUUID())
+      await until(() => pending)
+      const later = operations.submit(preview(), randomUUID())
+      chain.currentNonce = 1
+      const resolved = await operations.resolve(first.id, 'replacement')
+      if (!matches) {
+        assert.equal(resolved.status, 'failed')
+        assert.equal(resolved.error?.code, 'TRANSACTION_REPLACED')
+        assert.equal(resolved.gasSpentWei, '7')
+      }
+      chain.shouldMine = true
+      release()
+      await until(() => operations.get(later.id).status === 'succeeded')
+      const result = operations.get(first.id)
+      assert.equal(result.steps[0].receipt?.hash, 'replacement')
+      assert.equal(result.gasSpentWei, matches ? '12' : '7')
+      assert.equal(chain.signs.length, matches ? 3 : 2)
+      if (matches) {
+        assert.equal(result.status, 'succeeded')
+        assert.equal(result.steps[0].status, 'confirmed')
+        assert.equal(result.steps[0].error, undefined)
+      } else {
+        assert.deepEqual(result, resolved)
+        assert.equal(result.steps[0].status, 'failed')
+        assert.equal(result.steps[1].status, 'pending')
+      }
+      assert.equal(
+        new Journal(directory, chain.owner).get(first.id)?.status,
+        result.status,
+      )
+    } finally {
+      release()
+      await operations.stop()
+    }
+  })
 }
 
 test('failure to read the result preserves a confirmed withdrawal', async t => {

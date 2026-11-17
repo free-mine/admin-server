@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 import { AppError } from '../shared/index.js'
-import type { Operation, PendingJournal } from './types.js'
+import type { Operation, JournalData, PendingJournal } from './types.js'
 
 const units = z.string().regex(/^(0|[1-9]\d*)$/)
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -20,22 +20,18 @@ const receipt = z.object({
     }),
   ),
 })
+const approval = z.strictObject({
+  token: z.string(),
+  spender: z.string(),
+  amount: units,
+})
 const step = z.strictObject({
   id: integer,
-  code: z.enum(['EXECUTE', 'ALLOWANCE_APPROVE', 'ALLOWANCE_RESET']),
   call: z.strictObject({
     to: z.string().min(1),
     data: z.string(),
     value: units,
   }),
-  approval: z
-    .strictObject({
-      token: z.string(),
-      spender: z.string(),
-      amount: units,
-      resetBelow: units.optional(),
-    })
-    .optional(),
   status: z.enum([
     'pending',
     'checking',
@@ -109,7 +105,21 @@ const operationSchema = z.object({
       }),
     ]),
   ),
-  steps: z.array(step).min(1),
+  steps: z
+    .array(
+      z.discriminatedUnion('code', [
+        step.extend({ code: z.literal('EXECUTE') }),
+        step.extend({ code: z.literal('ALLOWANCE_APPROVE'), approval }),
+        step.extend({
+          code: z.literal('ALLOWANCE_RESET'),
+          approval: approval.extend({
+            amount: z.literal('0'),
+            resetBelow: units,
+          }),
+        }),
+      ]),
+    )
+    .min(1),
 })
 
 export function parseOperation(value: unknown): Operation {
@@ -121,9 +131,6 @@ export function parseOperation(value: unknown): Operation {
   for (const [index, step] of operation.steps.entries()) {
     if (
       step.id !== index ||
-      (step.code !== 'EXECUTE' && !step.approval) ||
-      (step.code === 'ALLOWANCE_RESET' &&
-        (step.approval?.amount !== '0' || !step.approval.resetBelow)) ||
       ((step.status === 'broadcasting' || step.status === 'confirming') &&
         !step.signed) ||
       (step.status === 'confirmed' &&
@@ -138,6 +145,24 @@ export function parseOperation(value: unknown): Operation {
     }
   }
   return operation as Operation
+}
+
+export function parseJournal(value: unknown): JournalData {
+  const result = z
+    .object({
+      format: z.literal(1),
+      owner: z.string().min(1),
+      chainId: integer,
+      operations: z.array(z.unknown()),
+    })
+    .safeParse(value)
+  if (!result.success) {
+    throw new AppError('INVALID_JOURNAL', 503)
+  }
+  return {
+    ...result.data,
+    operations: result.data.operations.map(parseOperation),
+  }
 }
 
 export function parsePendingJournal(value: unknown): PendingJournal {

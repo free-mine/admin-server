@@ -1,5 +1,4 @@
 import type { Chain } from './context.js'
-import { ensure } from '../shared/index.js'
 import { erc20Abi } from '../contracts/index.js'
 import type { Approval, PlannedStep, TransactionTransport } from './types.js'
 
@@ -15,8 +14,6 @@ export async function canSkipApproval(
     if (current === 0n) {
       return true
     }
-    // Проверяем также шаги, восстановленные из журнала.
-    ensure(step.approval.resetBelow !== undefined, 'INTERNAL_ERROR')
     return current >= BigInt(step.approval.resetBelow)
   }
   return current >= BigInt(step.approval.amount)

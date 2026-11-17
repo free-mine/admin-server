@@ -2,67 +2,85 @@ import test from 'node:test'
 import { once } from 'node:events'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import type { TestContext } from 'node:test'
 
 import { WebSocket } from 'ws'
 
-import { AppError } from '../src/shared/index.js'
 import type { Chain } from '../src/chain/index.js'
 import { createServer } from '../src/http/index.js'
 import { readConfig } from '../src/config/index.js'
 import { until, engine, preview } from './helpers.js'
-import { PublicState } from '../src/public-state/index.js'
 import type { Previews } from '../src/operations/index.js'
-import { PublicServer } from '../src/public-server/index.js'
 import type { Successors } from '../src/successors/index.js'
 
-test('HTTP ordering, idempotency and WebSocket snapshots', async t => {
+const pin = '001234'
+
+function server(t: TestContext, domain = 'localhost') {
   const { chain, operations, journal } = engine(t)
   const plan = preview()
-  const config = readConfig({
-    RPC_URL: 'http://127.0.0.1:18545',
-    PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
-    PRIVATE_KEY: '1'.repeat(64),
-  })
   const app = createServer({
-    config,
+    config: readConfig({
+      RPC_URL: 'http://127.0.0.1:18545',
+      ALLOWED_DOMAIN: domain,
+      PANEL_PIN: pin,
+      PRIVATE_KEY: '1'.repeat(64),
+    }),
     operations,
     journal,
-    publicState: new PublicState(
-      new PublicServer({ url: config.publicServerUrl, timeoutMs: 100 }),
-    ),
     chain: chain as unknown as Chain,
     previews: { get: () => plan } as unknown as Previews,
     successors: {} as Successors,
   })
   t.after(() => app.close())
-  assert.equal((await app.inject('/health')).statusCode, 200)
-  assert.equal(
-    (await app.inject({ method: 'POST', url: '/v1/operations', payload: {} }))
-      .statusCode,
-    400,
-  )
-  for (const id of ['abc', '1.2', '1e2']) {
-    const response = await app.inject(`/v1/fund/shifts/${id}`)
-    assert.equal(response.statusCode, 400)
-    assert.deepEqual(response.json(), {
-      error: { code: 'INVALID_REQUEST', fields: ['id'] },
-    })
-    const previewResponse = await app.inject({
-      method: 'POST',
-      url: '/v1/previews',
-      payload: {
-        action: { kind: 'uniswap.collect', params: { tokenId: id } },
-        maxGasAvax: '0.1',
-      },
-    })
-    assert.equal(previewResponse.statusCode, 400)
-    assert.deepEqual(previewResponse.json(), {
-      error: { code: 'INVALID_REQUEST', fields: ['action.params.tokenId'] },
-    })
-  }
+  return { app, chain, operations, plan }
+}
+
+async function login(
+  app: ReturnType<typeof createServer>,
+  domain = 'localhost',
+) {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/v1/session',
+    headers: { host: domain, origin: `http://${domain}` },
+    payload: { pin },
+  })
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(response.json(), { authenticated: true })
+  const cookie = response.headers['set-cookie']
+  assert.equal(typeof cookie, 'string')
+  assert.match(String(cookie), /^panel_session=[^;]+;/)
+  assert.match(String(cookie), /HttpOnly/i)
+  assert.match(String(cookie), /SameSite=Strict/i)
+  assert.ok(!String(cookie).includes(pin))
+  return String(cookie).split(';')[0]
+}
+
+test('authenticated HTTP ordering, idempotency and WebSocket snapshots', async t => {
+  const { app, chain, plan } = server(t)
+  const headers = { host: 'localhost', cookie: await login(app) }
+  const response = await app.inject({ url: '/v1/fund/shifts/abc', headers })
+  assert.equal(response.statusCode, 400)
+  assert.deepEqual(response.json(), {
+    error: { code: 'INVALID_REQUEST', fields: ['id'] },
+  })
+  const previewResponse = await app.inject({
+    method: 'POST',
+    url: '/v1/previews',
+    headers,
+    payload: {
+      action: { kind: 'uniswap.collect', params: { tokenId: 'abc' } },
+      maxGasAvax: '0.1',
+    },
+  })
+  assert.equal(previewResponse.statusCode, 400)
+  assert.deepEqual(previewResponse.json(), {
+    error: { code: 'INVALID_REQUEST', fields: ['action.params.tokenId'] },
+  })
   const url = await app.listen({ host: '127.0.0.1', port: 0 })
   const socket = new WebSocket(`${url.replace('http:', 'ws:')}/v1/ws`, {
     origin: 'http://localhost:5173',
+    headers,
   })
   t.after(() => socket.terminate())
   const messages: {
@@ -78,6 +96,7 @@ test('HTTP ordering, idempotency and WebSocket snapshots', async t => {
     method: 'POST',
     url: '/v1/operations',
     payload,
+    headers,
   })
   assert.equal(submitted.statusCode, 202)
   const id = submitted.json().id as string
@@ -92,13 +111,18 @@ test('HTTP ordering, idempotency and WebSocket snapshots', async t => {
     method: 'POST',
     url: '/v1/operations',
     payload,
+    headers,
   })
   assert.equal(repeated.statusCode, 200)
   assert.equal(repeated.json().id, id)
-  const page = (await app.inject('/v1/operations?offset=0&limit=1')).json()
+  const page = (
+    await app.inject({ url: '/v1/operations?offset=0&limit=1', headers })
+  ).json()
   assert.equal(page.total, 1)
   assert.equal(page.operations[0].id, id)
-  const emptyPage = (await app.inject('/v1/operations?offset=1&limit=1')).json()
+  const emptyPage = (
+    await app.inject({ url: '/v1/operations?offset=1&limit=1', headers })
+  ).json()
   assert.equal(emptyPage.total, 1)
   assert.deepEqual(emptyPage.operations, [])
   assert.equal(chain.signs.length, 1)
@@ -112,165 +136,297 @@ test('HTTP ordering, idempotency and WebSocket snapshots', async t => {
   )
 })
 
-test('HTTP and WebSocket accept localhost origins on any port', async t => {
-  const { chain, operations, journal } = engine(t)
-  const app = createServer({
-    config: readConfig({
-      RPC_URL: 'http://127.0.0.1:18545',
-      PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
-      PRIVATE_KEY: '1'.repeat(64),
-    }),
-    operations,
-    journal,
-    publicState: new PublicState(
-      new PublicServer({ url: 'http://127.0.0.1:18546', timeoutMs: 100 }),
-    ),
-    chain: chain as unknown as Chain,
-    previews: {} as Previews,
-    successors: {} as Successors,
-  })
-  t.after(() => app.close())
-  const url = await app.listen({ host: '127.0.0.1', port: 0 })
+test('HTTP accepts only the configured origin hostname', async t => {
+  const domain = 'admin.example'
+  const { app } = server(t, domain)
+  const cookie = await login(app, domain)
   const cases = [
     [undefined, true],
-    ['http://localhost', true],
-    ['https://localhost', true],
-    ['http://localhost:5173', true],
-    ['http://localhost:8080', true],
-    ['http://localhost:65535', true],
-    ['https://localhost:9443', true],
+    ['http://admin.example', true],
+    ['https://admin.example:9443', true],
     ['https://untrusted.example', false],
-    ['http://localhost.untrusted.example:5173', false],
-    ['http://app.localhost:5173', false],
-    ['http://127.0.0.1:5173', false],
-    ['http://[::1]:5173', false],
-    ['ws://localhost:5173', false],
-    ['ftp://localhost:5173', false],
-    ['http://localhost:65536', false],
-    ['http://user@localhost:5173', false],
-    ['http://localhost:5173/', false],
-    ['http://localhost:5173/path', false],
-    ['http://localhost:5173?query', false],
-    ['http://localhost:5173#fragment', false],
+    ['http://admin.example.untrusted.example:5173', false],
+    ['http://app.admin.example:5173', false],
+    ['ftp://admin.example:5173', false],
+    ['http://admin.example:65536', false],
+    ['http://user@admin.example:5173', false],
+    ['http://admin.example:5173/path', false],
+    ['http://admin.example.', false],
     ['null', false],
-    ['invalid', false],
   ] as const
   for (const [origin, allowed] of cases) {
-    await t.test(origin ?? 'no Origin', async t => {
-      for (const method of ['GET', 'OPTIONS'] as const) {
-        const response = await app.inject({
-          method,
-          url: '/v1/config',
-          headers: {
-            ...(origin === undefined ? {} : { origin }),
-            ...(method === 'OPTIONS'
-              ? {
-                  'access-control-request-method': 'POST',
-                  'access-control-request-headers': 'content-type',
-                }
-              : {}),
-          },
-        })
-        assert.equal(
-          response.statusCode,
-          allowed ? (method === 'OPTIONS' ? 204 : 200) : 403,
-        )
-        assert.equal(
-          response.headers['access-control-allow-origin'],
-          allowed ? origin : undefined,
-        )
-        if (allowed && origin) {
-          assert.equal(response.headers.vary, 'Origin')
-          assert.equal(
-            response.headers['access-control-allow-methods'],
-            'GET,POST,OPTIONS',
-          )
-          assert.equal(
-            response.headers['access-control-allow-headers'],
-            'Content-Type',
-          )
-        }
-        if (!allowed) {
-          assert.equal(response.json().error.code, 'ORIGIN_NOT_ALLOWED')
-        }
-      }
-      const socket = new WebSocket(`${url.replace('http:', 'ws:')}/v1/ws`, {
-        origin,
+    await t.test(origin ?? 'no Origin', async () => {
+      const response = await app.inject({
+        url: '/v1/config',
+        headers: {
+          host: domain,
+          cookie,
+          ...(origin === undefined ? {} : { origin }),
+        },
       })
-      t.after(() => socket.terminate())
-      if (allowed) {
-        const [data] = await once(socket, 'message')
-        assert.equal(JSON.parse(String(data)).type, 'operations.snapshot')
-      } else {
-        const [error] = await once(socket, 'error')
-        assert.match(error.message, /Unexpected server response: 403/)
+      assert.equal(response.statusCode, allowed ? 200 : 403)
+      assert.equal(
+        response.headers['access-control-allow-origin'],
+        allowed ? origin : undefined,
+      )
+      if (!allowed) {
+        assert.deepEqual(response.json(), {
+          error: { code: 'DOMAIN_NOT_ALLOWED' },
+        })
+        assert.ok(!JSON.stringify(response.headers).includes(domain))
+        assert.ok(!response.body.includes(domain))
       }
     })
   }
 })
 
-test('public snapshot outages remain visible while local operations keep working', async t => {
-  const { chain, operations, journal } = engine(t)
-  const plan = preview()
-  let offline = false
-  const publicState = new PublicState({
-    state: async () => {
-      if (offline) {
-        throw new AppError('PUBLIC_SERVER_UNAVAILABLE', 503)
-      }
-      return {
-        block: { number: 1, timestamp: Math.floor(Date.now() / 1000) - 600 },
-      }
-    },
-    refresh: async () => {
-      if (offline) {
-        throw new AppError('PUBLIC_SERVER_UNAVAILABLE', 503)
-      }
-      return { status: 'accepted' }
+test('preflight and WebSocket enforce domain checks independently of the session', async t => {
+  const domain = 'admin.example'
+  const { app } = server(t, domain)
+  const cookie = await login(app, domain)
+  const url = await app.listen({ host: '127.0.0.1', port: 0 })
+  const preflight = await app.inject({
+    method: 'OPTIONS',
+    url: '/v1/operations',
+    headers: {
+      'host': `${domain}:5175`,
+      'origin': `https://${domain}`,
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'content-type',
     },
   })
-  const app = createServer({
-    config: readConfig({
-      RPC_URL: 'http://rpc.invalid',
-      PUBLIC_SERVER_URL: 'http://public.invalid',
-    }),
-    chain: chain as unknown as Chain,
-    operations,
-    journal,
-    publicState,
-    previews: { get: () => plan } as unknown as Previews,
-    successors: {} as Successors,
-  })
-  t.after(async () => {
-    await app.close()
-    await publicState.stop()
-  })
-  const state = (await app.inject('/v1/state')).json()
-  assert.equal(state.source, 'public-server')
-  assert.equal(state.cached, false)
-  assert.ok(state.ageSeconds >= 600)
+  assert.equal(preflight.statusCode, 204)
   assert.equal(
-    (await app.inject({ method: 'POST', url: '/v1/state/refresh' })).statusCode,
-    202,
+    preflight.headers['access-control-allow-origin'],
+    `https://${domain}`,
   )
-  await publicState.sync()
-  offline = true
-  const cached = (await app.inject('/v1/state')).json()
-  assert.equal(cached.cached, true)
+  assert.equal(preflight.headers.vary, 'Origin')
+  assert.equal(preflight.headers['access-control-allow-credentials'], 'true')
   assert.equal(
-    (await app.inject('/v1/sync')).json().state.lastError.code,
-    'PUBLIC_SERVER_UNAVAILABLE',
+    preflight.headers['access-control-allow-methods'],
+    'GET,POST,OPTIONS',
   )
-  assert.equal((await app.inject('/ready')).statusCode, 200)
-  const response = await app.inject({
+  assert.equal(
+    preflight.headers['access-control-allow-headers'],
+    'Content-Type',
+  )
+
+  for (const headers of [
+    { host: domain, origin: 'https://untrusted.example', cookie },
+    { 'host': 'untrusted.example', 'x-forwarded-host': domain, cookie },
+  ]) {
+    assert.equal(
+      (await app.inject({ method: 'OPTIONS', url: '/v1/operations', headers }))
+        .statusCode,
+      403,
+    )
+    const socket = new WebSocket(`${url.replace('http:', 'ws:')}/v1/ws`, {
+      headers,
+    })
+    t.after(() => socket.terminate())
+    const [error] = await once(socket, 'error')
+    assert.match(error.message, /Unexpected server response: 403/)
+  }
+})
+
+test('PIN guards reads, mutations and WebSocket before authentication', async t => {
+  const { app, chain } = server(t)
+  assert.deepEqual((await app.inject('/v1/session')).json(), {
+    authenticated: false,
+  })
+  for (const url of ['/ready', '/v1/config', '/v1/journal', '/v1/operations']) {
+    const response = await app.inject(url)
+    assert.equal(response.statusCode, 401)
+    assert.deepEqual(response.json(), { error: { code: 'AUTH_REQUIRED' } })
+  }
+  for (const url of [
+    '/v1/previews',
+    '/v1/operations',
+    `/v1/operations/${randomUUID()}/resolve`,
+  ]) {
+    const response = await app.inject({ method: 'POST', url, payload: {} })
+    assert.equal(response.statusCode, 401)
+    assert.deepEqual(response.json(), { error: { code: 'AUTH_REQUIRED' } })
+  }
+  const url = await app.listen({ host: '127.0.0.1', port: 0 })
+  for (const cookie of [undefined, 'panel_session=fake']) {
+    const socket = new WebSocket(`${url.replace('http:', 'ws:')}/v1/ws`, {
+      origin: 'http://localhost',
+      headers: { host: 'localhost', ...(cookie ? { cookie } : {}) },
+    })
+    t.after(() => socket.terminate())
+    const [error] = await once(socket, 'error')
+    assert.match(error.message, /Unexpected server response: 401/)
+  }
+  assert.equal(chain.signs.length, 0)
+})
+
+test('public access follows the matched route, including HEAD and query strings', async t => {
+  const { app } = server(t)
+  for (const method of ['GET', 'HEAD'] as const) {
+    for (const url of ['/health?probe=1', '/v1/session?probe=1']) {
+      assert.equal((await app.inject({ method, url })).statusCode, 200)
+      assert.equal(
+        (
+          await app.inject({
+            method,
+            url,
+            headers: { host: 'untrusted.example' },
+          })
+        ).statusCode,
+        403,
+      )
+    }
+  }
+  for (const [method, url] of [
+    ['HEAD', '/v1/config'],
+    ['GET', '/v1/session/logout'],
+    ['GET', '/v1/session/unknown'],
+    ['POST', '/health'],
+    ['GET', '/unknown'],
+  ] as const) {
+    assert.equal((await app.inject({ method, url })).statusCode, 401)
+  }
+})
+
+test('invalid submissions are rejected before querying RPC ownership', async t => {
+  const { app, chain, plan } = server(t)
+  const headers = { cookie: await login(app) }
+  const ownership = t.mock.method(chain, 'assertOwner', async () => {
+    throw new Error('RPC unavailable')
+  })
+  const invalid = await app.inject({
     method: 'POST',
     url: '/v1/operations',
+    headers,
+    payload: {},
+  })
+  assert.equal(invalid.statusCode, 400)
+  assert.equal(invalid.json().error.code, 'INVALID_REQUEST')
+  assert.equal(ownership.mock.callCount(), 0)
+
+  const valid = await app.inject({
+    method: 'POST',
+    url: '/v1/operations',
+    headers,
     payload: { previewId: plan.id, requestId: randomUUID() },
   })
-  assert.equal(response.statusCode, 202)
-  await until(() => operations.get(response.json().id).status === 'succeeded')
-  const synced = await app.inject({ method: 'POST', url: '/v1/sync' })
-  assert.equal(synced.statusCode, 200)
-  assert.equal(synced.json().state.available, false)
-  assert.ok(!synced.body.includes('signed-secret'))
+  assert.equal(valid.statusCode, 500)
+  assert.equal(ownership.mock.callCount(), 1)
+  assert.equal(chain.signs.length, 0)
+})
+
+test('session cookie permits access and logout revokes HTTP and an active socket', async t => {
+  const { app } = server(t)
+  const cookie = await login(app)
+  const headers = { host: 'localhost', cookie }
+  assert.deepEqual((await app.inject({ url: '/v1/session', headers })).json(), {
+    authenticated: true,
+  })
+  const config = await app.inject({ url: '/v1/config', headers })
+  assert.equal(config.statusCode, 200)
+  assert.ok(!config.body.includes(pin))
+  assert.deepEqual((await app.inject({ url: '/v1/journal', headers })).json(), {
+    blocked: false,
+  })
+  const url = await app.listen({ host: '127.0.0.1', port: 0 })
+  const socket = new WebSocket(`${url.replace('http:', 'ws:')}/v1/ws`, {
+    headers,
+  })
+  t.after(() => socket.terminate())
+  await once(socket, 'message')
+  const closed = once(socket, 'close')
+  const logout = await app.inject({
+    method: 'POST',
+    url: '/v1/session/logout',
+    headers,
+  })
+  assert.equal(logout.statusCode, 200)
+  assert.deepEqual(logout.json(), { authenticated: false })
+  assert.match(String(logout.headers['set-cookie']), /Max-Age=0/i)
+  await closed
+  assert.deepEqual((await app.inject({ url: '/v1/session', headers })).json(), {
+    authenticated: false,
+  })
+  assert.equal(
+    (await app.inject({ url: '/v1/config', headers })).statusCode,
+    401,
+  )
+})
+
+test('session tokens do not survive server restart', async t => {
+  const first = server(t)
+  const cookie = await login(first.app)
+  const second = server(t)
+  assert.equal(
+    (await second.app.inject({ url: '/v1/config', headers: { cookie } }))
+      .statusCode,
+    401,
+  )
+})
+
+test('HTTPS login sets a secure cookie without exposing the PIN', async t => {
+  const { app } = server(t, 'admin.example')
+  const response = await app.inject({
+    method: 'POST',
+    url: '/v1/session',
+    headers: { host: 'admin.example', origin: 'https://admin.example' },
+    payload: { pin },
+  })
+  assert.equal(response.statusCode, 200)
+  assert.match(String(response.headers['set-cookie']), /; Secure/i)
+  assert.ok(!response.body.includes(pin))
+})
+
+test('PIN guessing is limited even when forwarded addresses change', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const { app } = server(t)
+  for (let index = 0; index < 5; index++) {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/session',
+      headers: { 'x-forwarded-for': `192.0.2.${index}` },
+      payload: { pin: '999999' },
+    })
+    assert.equal(response.statusCode, 401)
+    assert.deepEqual(response.json(), { error: { code: 'INVALID_PIN' } })
+    assert.equal(response.headers['set-cookie'], undefined)
+  }
+  const limited = await app.inject({
+    method: 'POST',
+    url: '/v1/session',
+    headers: { 'x-forwarded-for': '192.0.2.100' },
+    payload: { pin },
+  })
+  assert.equal(limited.statusCode, 429)
+  assert.deepEqual(limited.json(), { error: { code: 'AUTH_RATE_LIMITED' } })
+  assert.equal(limited.headers['set-cookie'], undefined)
+  t.mock.timers.tick(15 * 60 * 1000 + 1)
+  await login(app)
+})
+
+test('expired sessions deny HTTP access and require another PIN login', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const { app } = server(t)
+  const headers = { cookie: await login(app) }
+  t.mock.timers.tick(12 * 60 * 60 * 1000 + 1)
+  assert.deepEqual((await app.inject({ url: '/v1/session', headers })).json(), {
+    authenticated: false,
+  })
+  assert.equal(
+    (await app.inject({ url: '/v1/config', headers })).statusCode,
+    401,
+  )
+  assert.equal(
+    (
+      await app.inject({
+        url: '/v1/operations',
+        method: 'POST',
+        headers,
+        payload: {},
+      })
+    ).statusCode,
+    401,
+  )
+  await login(app)
 })

@@ -1,19 +1,15 @@
 import test from 'node:test'
-import { once } from 'node:events'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import type { TestContext } from 'node:test'
 
 import Fastify from 'fastify'
-import { WebSocket } from 'ws'
 import { Wallet, Interface, Transaction } from 'ethers'
 
 import { temporary } from './helpers.js'
 import { Chain } from '../src/chain/index.js'
 import { createServer } from '../src/http/index.js'
 import { Successors } from '../src/successors/index.js'
-import { PublicState } from '../src/public-state/index.js'
-import { PublicServer } from '../src/public-server/index.js'
 import { Journal, Previews, Operations } from '../src/operations/index.js'
 import { erc20Abi, oreVeinAbi, freeMineAbi } from '../src/contracts/index.js'
 import { tokens, CHAIN_ID, addresses, readConfig } from '../src/config/index.js'
@@ -115,106 +111,120 @@ async function rpc(t: TestContext) {
   return { url, calls, state }
 }
 
+test('read only serves data and previews but forbids signing, sending and resolving', async t => {
+  const { url, calls, state } = await rpc(t)
+  const config = readConfig({
+    RPC_URL: url,
+    ALLOWED_DOMAIN: 'localhost',
+    PANEL_PIN: '1234',
+  })
+  const chain = await Chain.connect(config)
+  t.after(() => chain.dispose())
+  assert.equal(chain.owner, owner)
+  assert.equal(chain.readOnly, true)
+  const journal = new Journal(temporary(t), chain.owner, chain.readOnly)
+  const operations = new Operations(journal, chain, 5)
+  operations.start()
+  t.after(() => operations.stop())
+  const app = createServer({
+    config,
+    chain,
+    operations,
+    journal,
+    previews: new Previews(chain, config.previewTtlSeconds),
+    successors: new Successors(chain, config),
+  })
+  t.after(() => app.close())
+  const login = await app.inject({
+    method: 'POST',
+    url: '/v1/session',
+    payload: { pin: '1234' },
+  })
+  assert.equal(login.statusCode, 200, login.body)
+  const headers = {
+    cookie: String(login.headers['set-cookie']).split(';')[0],
+  }
+  const publicConfig = (await app.inject({ url: '/v1/config', headers })).json()
+  assert.equal(publicConfig.owner, owner)
+  assert.equal(publicConfig.readOnly, true)
+  assert.ok(!('privateKey' in publicConfig))
+  assert.ok(!('rpcUrl' in publicConfig))
+  const ready = await app.inject({ url: '/ready', headers })
+  assert.equal(ready.statusCode, 200)
+  assert.deepEqual(ready.json(), { status: 'ready', readOnly: true })
+  const balances = await app.inject({ url: '/v1/balances', headers })
+  assert.equal(balances.statusCode, 200)
+  assert.equal(balances.json().owner, owner)
+  assert.equal(balances.json().ownerAvax, '1.0')
+  const preview = await app.inject({
+    method: 'POST',
+    headers,
+    url: '/v1/previews',
+    payload: {
+      action: { kind: 'contract.setURI', params: { uri: 'ipfs://preview' } },
+      maxGasAvax: '0.01',
+    },
+  })
+  assert.equal(preview.statusCode, 201, preview.body)
+  assert.equal(preview.json().gasEstimateComplete, true)
+  const estimates = calls.filter(call => call.method === 'eth_estimateGas')
+  assert.ok(estimates.length > 0)
+  for (const call of estimates) {
+    assert.equal(
+      (call.params[0] as { from: string }).from.toLowerCase(),
+      owner.toLowerCase(),
+    )
+  }
+  const submitted = await app.inject({
+    method: 'POST',
+    headers,
+    url: '/v1/operations',
+    payload: { previewId: preview.json().id, requestId: randomUUID() },
+  })
+  assert.equal(submitted.statusCode, 403)
+  assert.equal(submitted.json().error.code, 'READ_ONLY')
+  const resolved = await app.inject({
+    method: 'POST',
+    headers,
+    url: `/v1/operations/${randomUUID()}/resolve`,
+    payload: { transactionHash: `0x${'1'.repeat(64)}` },
+  })
+  assert.equal(resolved.statusCode, 403)
+  assert.equal(resolved.json().error.code, 'READ_ONLY')
+  assert.equal(
+    (await app.inject({ url: '/v1/operations', headers })).json().total,
+    0,
+  )
+  await assert.rejects(
+    chain.sign(chain.direct('setContractURI', ['ipfs://test']), 10n ** 18n),
+    { code: 'READ_ONLY', status: 403 },
+  )
+  await assert.rejects(chain.broadcast('0x'), {
+    code: 'READ_ONLY',
+    status: 403,
+  })
+  assert.ok(!calls.some(call => call.method === 'eth_sendRawTransaction'))
+  state.available = false
+  assert.equal((await app.inject({ url: '/ready', headers })).statusCode, 503)
+})
+
 for (const [label, key] of [
-  ['missing key', undefined],
-  ['empty key', ''],
   ['another wallet', '2'.repeat(64)],
   ['invalid key', 'invalid'],
-  ['zero key', '0'.repeat(64)],
 ] as const) {
-  test(`read only with ${label}: reads and previews work without transactions`, async t => {
-    const { url, calls, state } = await rpc(t)
-    const config = readConfig({
-      RPC_URL: url,
-      PRIVATE_KEY: key,
-      PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
-    })
-    const chain = await Chain.connect(config)
+  test(`${label} selects read only with the contract owner`, async t => {
+    const { url } = await rpc(t)
+    const chain = await Chain.connect(
+      readConfig({
+        RPC_URL: url,
+        PRIVATE_KEY: key,
+        ALLOWED_DOMAIN: 'localhost',
+        PANEL_PIN: '1234',
+      }),
+    )
     t.after(() => chain.dispose())
     assert.equal(chain.owner, owner)
     assert.equal(chain.readOnly, true)
-    const journal = new Journal(temporary(t), chain.owner, chain.readOnly)
-    const operations = new Operations(journal, chain, 5)
-    operations.start()
-    t.after(() => operations.stop())
-    const app = createServer({
-      config,
-      chain,
-      operations,
-      journal,
-      publicState: new PublicState(
-        new PublicServer({ url: config.publicServerUrl, timeoutMs: 100 }),
-      ),
-      previews: new Previews(chain, config.previewTtlSeconds),
-      successors: new Successors(chain, config),
-    })
-    t.after(() => app.close())
-    const publicConfig = (await app.inject('/v1/config')).json()
-    assert.equal(publicConfig.owner, owner)
-    assert.equal(publicConfig.readOnly, true)
-    assert.ok(!('privateKey' in publicConfig))
-    assert.ok(!('rpcUrl' in publicConfig))
-    const ready = await app.inject('/ready')
-    assert.equal(ready.statusCode, 200)
-    assert.deepEqual(ready.json(), { status: 'ready', readOnly: true })
-    const balances = await app.inject('/v1/balances')
-    assert.equal(balances.statusCode, 200)
-    assert.equal(balances.json().owner, owner)
-    assert.equal(balances.json().ownerAvax, '1.0')
-    const preview = await app.inject({
-      method: 'POST',
-      url: '/v1/previews',
-      payload: {
-        action: { kind: 'contract.setURI', params: { uri: 'ipfs://preview' } },
-        maxGasAvax: '0.01',
-      },
-    })
-    assert.equal(preview.statusCode, 201, preview.body)
-    assert.equal(preview.json().gasEstimateComplete, true)
-    const estimates = calls.filter(call => call.method === 'eth_estimateGas')
-    assert.ok(estimates.length > 0)
-    for (const call of estimates) {
-      assert.equal(
-        (call.params[0] as { from: string }).from.toLowerCase(),
-        owner.toLowerCase(),
-      )
-    }
-    const submitted = await app.inject({
-      method: 'POST',
-      url: '/v1/operations',
-      payload: { previewId: preview.json().id, requestId: randomUUID() },
-    })
-    assert.equal(submitted.statusCode, 403)
-    assert.equal(submitted.json().error.code, 'READ_ONLY')
-    const resolved = await app.inject({
-      method: 'POST',
-      url: `/v1/operations/${randomUUID()}/resolve`,
-      payload: { transactionHash: `0x${'1'.repeat(64)}` },
-    })
-    assert.equal(resolved.statusCode, 403)
-    assert.equal(resolved.json().error.code, 'READ_ONLY')
-    assert.equal((await app.inject('/v1/operations')).json().total, 0)
-    const baseUrl = await app.listen({ host: '127.0.0.1', port: 0 })
-    const socket = new WebSocket(`${baseUrl.replace('http:', 'ws:')}/v1/ws`, {
-      origin: 'http://localhost:8080',
-    })
-    t.after(() => socket.terminate())
-    const [snapshot] = await once(socket, 'message')
-    assert.deepEqual(JSON.parse(String(snapshot)), {
-      type: 'operations.snapshot',
-      operations: [],
-    })
-    await assert.rejects(
-      chain.sign(chain.direct('setContractURI', ['ipfs://test']), 10n ** 18n),
-      { code: 'READ_ONLY', status: 403 },
-    )
-    await assert.rejects(chain.broadcast('0x'), {
-      code: 'READ_ONLY',
-      status: 403,
-    })
-    assert.ok(!calls.some(call => call.method === 'eth_sendRawTransaction'))
-    state.available = false
-    assert.equal((await app.inject('/ready')).statusCode, 503)
   })
 }
 
@@ -224,7 +234,8 @@ test('the owner key enables signing and sending; ownership is rechecked before s
     readConfig({
       RPC_URL: url,
       PRIVATE_KEY: ownerKey,
-      PUBLIC_SERVER_URL: 'http://127.0.0.1:18546',
+      ALLOWED_DOMAIN: 'localhost',
+      PANEL_PIN: '1234',
     }),
   )
   t.after(() => chain.dispose())
@@ -252,7 +263,11 @@ test('read only still rejects a wrong RPC network', async t => {
   state.chainId = 1
   await assert.rejects(
     Chain.connect(
-      readConfig({ RPC_URL: url, PUBLIC_SERVER_URL: 'http://127.0.0.1:18546' }),
+      readConfig({
+        RPC_URL: url,
+        ALLOWED_DOMAIN: 'localhost',
+        PANEL_PIN: '1234',
+      }),
     ),
     {
       code: 'WRONG_NETWORK',

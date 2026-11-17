@@ -10,57 +10,11 @@ import { Successors } from '../src/successors/index.js'
 
 const config = readConfig({
   RPC_URL: 'http://localhost:18545',
-  PUBLIC_SERVER_URL: 'http://localhost:18546',
+  ALLOWED_DOMAIN: 'localhost',
+  PANEL_PIN: '1234',
   PRIVATE_KEY: '1'.repeat(64),
   DEPLOYMENT_BLOCK: '1',
   LOG_BLOCK_RANGE: '8',
-})
-
-test('default configuration scans history and new blocks in ranges of at most ten', async () => {
-  const defaultConfig = readConfig({
-    RPC_URL: 'http://localhost:18545',
-    PUBLIC_SERVER_URL: 'http://localhost:18546',
-    DEPLOYMENT_BLOCK: '1',
-  })
-  let head = 25
-  const requests: [number, number][] = []
-  const source = {
-    provider: {
-      getBlock: async (tag: number | 'latest') => {
-        const number = tag === 'latest' ? head : tag
-        return { number, timestamp: 1000, hash: `block-${number}` }
-      },
-      getLogs: async ({
-        fromBlock,
-        toBlock,
-      }: {
-        toBlock: number
-        fromBlock: number
-      }) => {
-        requests.push([fromBlock, toBlock])
-        if (toBlock - fromBlock + 1 > 10) {
-          throw new Error('RPC range limit')
-        }
-        return []
-      },
-    },
-    oreVein: { interface: new Interface(oreVeinAbi) },
-  }
-  const calendar = new Successors(source as unknown as Chain, defaultConfig)
-  assert.equal((await calendar.read()).block, 25)
-  assert.deepEqual(requests, [
-    [1, 10],
-    [11, 20],
-    [21, 25],
-  ])
-
-  head = 37
-  requests.length = 0
-  assert.equal((await calendar.read()).block, 37)
-  assert.deepEqual(requests, [
-    [26, 35],
-    [36, 37],
-  ])
 })
 
 test('calendar chunks history, verifies mappings and rebuilds after a reorganization', async () => {

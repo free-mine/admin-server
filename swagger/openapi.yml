@@ -6,9 +6,11 @@ info:
     Локальный backend панели владельца Free Mine в Avalanche C-Chain (chainId 43114).
     Капитал и NFT позиций находятся у OreVein; транзакции подписывает владелец, он же оплачивает газ.
     Поддерживаются только WAVAX, USDT, USDC и BTC.b из публичной конфигурации.
-    Основной сервер хранит постоянный журнал и публичный снимок; управляющий подписывает и исполняет операции через RPC.
+    Постоянный журнал хранится локально; чтение данных, подпись и исполнение операций используют RPC.
+    Админский сервер не обращается к публичному серверу.
 
     ### Порядок работы
+    Сначала войдите через POST /v1/session с PIN и сохраните cookie panel_session.
     1. Создайте план через POST /v1/previews с action и общим maxGasAvax.
     2. Покажите пользователю request, summary, steps, expiresAt и оценку газа.
     3. После подтверждения отправьте previewId и новый UUID requestId в POST /v1/operations.
@@ -22,8 +24,7 @@ info:
     Decimals токенов доступны в GET /v1/config; цены FreeMine всегда имеют 18 decimals.
     ID смен, заявок и NFT — положительные целые строки; ID планов, заказов и requestId — UUID.
     В операциях expiresAt, createdAt, updatedAt — Unix milliseconds; контрактные времена — Unix seconds.
-    snapshot.updatedAt публичного снимка — строка ISO 8601, snapshot.block.timestamp — Unix seconds.
-    Неизвестные поля в телах запросов отклоняются. Максимальный размер тела — 32768 байт.
+    Неизвестные поля в запросах планов и операций отклоняются. Максимальный размер тела — 32768 байт.
 
     ### Газ и исполнение
     Очередь исполняется последовательно. Шаги ALLOWANCE_RESET и ALLOWANCE_APPROVE условны:
@@ -35,14 +36,6 @@ info:
     Изменение согласованного состояния приводит к PLAN_CHANGED. Ошибка не откатывает предыдущие транзакции
     и не отзывает выданные разрешения; проверяйте steps и receipts. Общей отмены операции нет.
 
-    ### Публичное состояние и RPC
-    GET /v1/state возвращает снимок основного сервера с источником, возрастом и признаком отставания.
-    Снимок не является текущей котировкой: расчёты, проверки балансов и полномочий, симуляции,
-    подпись и отправка всегда используют RPC. Существующие маршруты чтения фонда и протоколов также используют RPC.
-    После receipt управляющий запрашивает обновление, пока номер блока снимка не достигнет блока подтверждения.
-    POST /v1/state/refresh возвращает 202 после принятия запроса, а не после получения свежего снимка.
-    GET /v1/sync показывает состояние синхронизации; POST /v1/sync запускает немедленную попытку.
-
     ### Диапазон Uniswap V3
     Для mint задаются два положительных бюджета и minBoundaryPercent: минимальное расстояние обеих
     границ от текущей цены в процентах. Сервер подбирает диапазон для расчётного использования не менее
@@ -53,17 +46,23 @@ info:
     Preview показывает цены границ, проценты, ожидаемые суммы и остатки. Параметры range и ticks удалены
     из публичного API версии 2. Для неинициализированного пула нужна initialPrice в tokenB за tokenA.
 
-    ### Доступ и запуск
-    Авторизации нет; сервер рассчитан на локальное защищённое устройство и один экземпляр на кошелёк.
-    Запуск контейнера, ключи, volume и переменные окружения описаны
+    ### Доступ
+    Запуск, переменные окружения и миграция журнала описаны
     в [README](https://github.com/free-mine/admin-server/blob/main/README.md).
-    HTTP и WebSocket разрешают Origin только http://localhost и https://localhost на любом порту.
-    Origin с 127.0.0.1, поддоменами или другими доменами запрещён; путь и завершающий / не допускаются.
-    Swagger UI на GitHub Pages предназначен для чтения документации. Для Try it out раздайте
-    каталог swagger/ локальным HTTP-сервером, откройте его через localhost и задайте адрес API в Servers.
-    Проверка Origin не является авторизацией; запросы без Origin разрешены.
-    Браузер должен разрешать соединение с адресом API; HTTPS-странице может понадобиться HTTPS endpoint.
-    OPTIONS возвращает 204 для разрешённого Origin; HTTP-ответы имеют Cache-Control: no-store.
+    HTTP и WebSocket проверяют Host и, при наличии, Origin: имена хостов должны точно совпасть с ALLOWED_DOMAIN.
+    Поддомены и альтернативные адреса не допускаются; порты не ограничиваются.
+    Отсутствие Origin не отменяет проверку Host.
+    Отказ 403 DOMAIN_NOT_ALLOWED не содержит разрешённого домена в теле или заголовках.
+    После POST /v1/session сервер устанавливает cookie panel_session на 12 часов: HttpOnly, SameSite=Strict,
+    Path=/ и Secure при HTTPS. PIN и токен не возвращаются в JSON. GET /v1/session сообщает состояние входа.
+    Остальные API, включая /ready и WebSocket, требуют сессию; исключение — GET /health.
+    Проверка домена действует и для /health, и для всех маршрутов сессии. OPTIONS после проверки домена возвращает 204.
+    POST /v1/session/logout удаляет сессию и cookie и закрывает её WebSocket-соединения.
+    Неверный PIN возвращает 401 INVALID_PIN. После пяти неудач следующие попытки получают 429 AUTH_RATE_LIMITED
+    до конца 15-минутного окна с первой попытки. Ограничение общее для процесса; успешный вход сбрасывает счётчик.
+    Перезапуск сбрасывает ограничение и все сессии. HTTP-ответы имеют Cache-Control: no-store.
+    Для Try it out Swagger UI должен использовать тот же домен и схему, что и API; порт может отличаться.
+    Настройка описана в README; GitHub Pages предназначен для чтения документации.
 
     ### Read only
     Без корректного PRIVATE_KEY текущего владельца сервер запускается в режиме read only.
@@ -72,35 +71,28 @@ info:
     Доступны чтение данных, WebSocket и POST /v1/previews: симуляции и оценка газа используют адрес владельца.
     POST /v1/operations и POST /v1/operations/{id}/resolve возвращают 403 с кодом READ_ONLY.
     Журнал доступен для чтения, очередь приостановлена; сервер не подписывает и не отправляет транзакции,
-    включая сохранённые подписи. Локальные файлы и удалённые записи журнала не изменяются.
-    История читается с основного сервера при наличии ключа API; без связи доступны данные в памяти и локальной очереди.
+    включая сохранённые подписи. Журнал читается с локального диска без изменения файлов.
     Режим определяется при запуске. Для смены ключа или режима перезапустите сервер.
     Недоступный RPC, неверная сеть и несоответствие контрактов не маскируются режимом read only.
 
     ### Восстановление и ошибки
-    Основной сервер хранит полные операции, подписи и receipts. До подтверждения удалённой записи изменения
-    сохраняются в /app/data/operations.pending.json, подпись — до отправки транзакции. Этот файл также
-    сохраняет уже синхронизированные незавершённые операции для восстановления без связи и удаляется,
-    когда все операции завершены и синхронизированы. При недоступности основного сервера
-    исполнение через RPC продолжается; очередь отправляется после восстановления связи.
-    При запуске сервер восстанавливает журнал с основного сервера и применяет ещё не отправленные локальные изменения.
-    Для незавершённых операций он проверяет receipts и при необходимости повторно отправляет ту же подпись с тем же nonce и хэшем.
+    Полные операции, подписи и receipts хранятся локально в /app/data/operations.json.
+    Подпись сохраняется на диск до отправки транзакции.
+    Завершённые операции остаются в журнале: история и идемпотентность сохраняются после перезапуска.
+    Для незавершённых операций сервер проверяет receipts и при необходимости повторно отправляет ту же подпись с тем же nonce и хэшем.
     Preview до подтверждения хранится только в памяти. needs_attention означает конфликт nonce или
     истёкшую неподтверждённую транзакцию; исходный receipt продолжает отслеживаться.
     Для уже подтверждённой внешней замены используйте POST /v1/operations/{id}/resolve.
-    Ошибка локальной записи или конфликт удалённой ревизии останавливает исполнение, /ready возвращает 503.
-    Недоступность основного сервера сама по себе не означает неготовность RPC; проверяйте GET /v1/sync.
-    Прежний operations.json автоматически переносится в локальную очередь в режиме записи.
-    При JOURNAL_CONFLICT сопоставьте локальные и удалённые записи, устраните причину и перезапустите сервер;
-    автоматической перезаписи конфликтующего состояния нет.
+    Ошибка локальной записи останавливает исполнение, /ready возвращает 503.
+    GET /v1/journal показывает состояние локального хранения.
+    При JOURNAL_CONFLICT или некорректных данных сервер отказывается запускаться и сохраняет файлы для разбора.
     Ошибки REST имеют вид {"error":{"code":"PLAN_EXPIRED"}}; возможны reason и fields.
     Прикладные ошибки обычно возвращают 400, конфликты идемпотентности — 409,
-    отсутствующий заказ при GET — 404, запрещённый Origin — 403, ошибки RPC/сервера — 500.
+    отсутствующий заказ при GET — 404, отсутствие сессии — 401, запрещённый домен — 403,
+    ограничение попыток входа — 429, ошибки RPC/сервера — 500.
     Частые коды: INVALID_REQUEST, PREVIEW_NOT_FOUND, PREVIEW_EXPIRED, PLAN_EXPIRED, PLAN_CHANGED,
     GAS_BUDGET_EXCEEDED, INSUFFICIENT_TOKEN_BALANCE, INSUFFICIENT_GAS_BALANCE, CONTRACT_REVERT,
     TRANSACTION_REVERTED, READ_ONLY, OWNER_MISMATCH, WRONG_NETWORK, SERVICE_NOT_READY, QUEUE_FULL.
-    Синхронизация сообщает PUBLIC_SERVER_UNAVAILABLE, PUBLIC_SERVER_UNAUTHORIZED, PUBLIC_SERVER_KEY_REQUIRED,
-    PUBLIC_SERVER_CONFLICT, PUBLIC_SERVER_INVALID_RESPONSE и PUBLIC_SERVER_REQUEST_REJECTED.
     Ошибки журнала: JOURNAL_CONFLICT, INVALID_JOURNAL, JOURNAL_WRITE_FAILED,
     JOURNAL_OWNER_MISMATCH и JOURNAL_NETWORK_MISMATCH.
     Подбор диапазона может вернуть RANGE_REQUIRES_BOTH_ASSETS, INVALID_BOUNDARY_PERCENT,
@@ -111,11 +103,15 @@ servers:
     description: Адрес вашего экземпляра API
     variables:
       baseUrl:
-        default: http://127.0.0.1:3000
-        description: Полный URL API без завершающего /; это не адрес GitHub Pages.
+        default: http://localhost:3000
+        description: Полный URL API без завершающего / с именем хоста из ALLOWED_DOMAIN; это не адрес GitHub Pages.
+security:
+  - PanelSession: []
 tags:
+  - name: Вход
+    description: Проверка PIN, состояние сессии и выход.
   - name: Состояние
-    description: Готовность, конфигурация, публичный снимок, синхронизация и балансы.
+    description: Готовность, конфигурация, локальный журнал и балансы.
   - name: Преемники
     description: Расписание получения прав администратора.
   - name: Фонд
@@ -127,13 +123,122 @@ tags:
   - name: WebSocket
     description: События операций. Формат сообщений представлен в Schemas.
 paths:
+  /v1/session:
+    get:
+      security: []
+      tags:
+        - Вход
+      operationId: getSession
+      summary: Проверить состояние входа
+      description: Возвращает authenticated=false, если cookie нет, сессия истекла или отозвана. Проверка домена обязательна.
+      responses:
+        '200':
+          description: Состояние текущей сессии.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+              example:
+                authenticated: false
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      security: []
+      tags:
+        - Вход
+      operationId: signIn
+      summary: Войти по PIN
+      description: Проверяет PANEL_PIN и создаёт сессию на 12 часов. Повторный вход с действующей cookie заменяет прежнюю сессию и закрывает её WebSocket-соединения. Cookie устанавливается сервером; PIN и токен не возвращаются в JSON. После пяти неудач вход блокируется до конца 15-минутного окна с первой попытки; лимит общий для процесса и сбрасывается при перезапуске.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pin
+              properties:
+                pin:
+                  type: string
+                  maxLength: 32
+                  writeOnly: true
+                  description: PIN из PANEL_PIN; передавайте строкой, чтобы сохранить начальные нули.
+            example:
+              pin: '001234'
+      responses:
+        '200':
+          description: Сессия создана.
+          headers:
+            Set-Cookie:
+              description: panel_session со случайным токеном, Path=/, HttpOnly, SameSite=Strict, Max-Age=43200 и Secure при HTTPS.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+              example:
+                authenticated: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Неверный PIN; cookie не устанавливается.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_PIN
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: Лимит неудачных попыток входа исчерпан; повторите после окончания 15-минутного окна.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: AUTH_RATE_LIMITED
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/session/logout:
+    post:
+      security: []
+      tags:
+        - Вход
+      operationId: signOut
+      summary: Выйти из панели
+      description: Удаляет сессию текущей cookie и закрывает её WebSocket-соединения кодом 1008 AUTH_REQUIRED. Повторный выход и выход без сессии также успешны. Проверка домена обязательна.
+      responses:
+        '200':
+          description: Сессия отозвана; cookie удаляется.
+          headers:
+            Set-Cookie:
+              description: panel_session с пустым значением, Path=/, HttpOnly, SameSite=Strict, Max-Age=0 и Secure при HTTPS.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+              example:
+                authenticated: false
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
   /health:
     get:
+      security: []
       tags:
         - Состояние
       operationId: getHealth
       summary: Проверить HTTP-процесс
-      description: Не обращается к RPC. Используется Docker HEALTHCHECK.
+      description: Не обращается к RPC и не требует сессии. Проверка Host и Origin сохраняется. Используется Docker HEALTHCHECK.
       responses:
         '200':
           description: Успешный ответ.
@@ -177,6 +282,8 @@ paths:
                   readOnly:
                     type: boolean
                     description: true, если сервер работает без ключа владельца и не отправляет транзакции.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '503':
@@ -206,8 +313,8 @@ paths:
       tags:
         - Состояние
       operationId: getConfig
-      summary: Прочитать публичную конфигурацию
-      description: Сеть, адрес владельца контракта при запуске, режим readOnly, контракты, токены, TTL и пути состояния/синхронизации. Ключи и URL внешних сервисов не возвращаются.
+      summary: Прочитать конфигурацию панели
+      description: Сеть, адрес владельца контракта при запуске, режим readOnly, контракты, токены, TTL и путь журнала. Ключи, PIN, разрешённый домен и URL внешних сервисов не возвращаются.
       responses:
         '200':
           description: Успешный ответ.
@@ -217,92 +324,28 @@ paths:
                 $ref: '#/components/schemas/Config'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
-  /v1/state:
+  /v1/journal:
     get:
       tags:
         - Состояние
-      operationId: getPublicState
-      summary: Прочитать снимок основного сервера
-      description: |
-        Получает публичный снимок и добавляет его источник, возраст и признак отставания от подтверждённых операций.
-        При ошибке связи возвращает последний снимок из памяти с cached=true. Если снимка ещё нет, возвращает 503.
-        Поле ageSeconds считается от времени блока, а не от момента HTTP-запроса. Для подготовки операций используется RPC.
+      operationId: getJournalStatus
+      summary: Прочитать состояние локального журнала
+      description: Полная история и подписи сохраняются локально; при ошибке записи исполнение останавливается.
       responses:
         '200':
-          description: Снимок с метаданными актуальности.
+          description: Состояние локального хранения.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PublicStateView'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '503':
-          $ref: '#/components/responses/PublicServerUnavailable'
-        default:
-          $ref: '#/components/responses/Error'
-  /v1/state/refresh:
-    post:
-      tags:
-        - Состояние
-      operationId: refreshPublicState
-      summary: Запросить обновление снимка на основном сервере
-      description: |
-        Требуется PUBLIC_SERVER_KEY. Ответ означает принятие запроса основным сервером; обновление выполняется асинхронно.
-        Повторный запрос может присоединиться к уже выполняющемуся обновлению для более раннего блока.
-        Получайте новый снимок через GET /v1/state и проверяйте его block и updatedAt.
-      responses:
-        '202':
-          description: Обновление запрошено; возвращено локальное состояние синхронизации снимка.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PublicStateStatus'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '502':
-          $ref: '#/components/responses/Error'
-        '503':
-          $ref: '#/components/responses/PublicServerUnavailable'
-        default:
-          $ref: '#/components/responses/Error'
-  /v1/sync:
-    get:
-      tags:
-        - Состояние
-      operationId: getSynchronization
-      summary: Прочитать состояние синхронизации
-      description: Возвращает последнее известное состояние без запроса к основному серверу. Проверяйте pending, blocked, historyLoaded и lastError независимо от /ready.
-      responses:
-        '200':
-          description: Состояние журнала и публичного снимка.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Synchronization'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        default:
-          $ref: '#/components/responses/Error'
-    post:
-      tags:
-        - Состояние
-      operationId: synchronize
-      summary: Выполнить попытку синхронизации сейчас
-      description: |
-        Синхронизирует журнал и читает публичный снимок. Одновременные обращения используют текущую попытку.
-        Ошибки связи отражаются в lastError соответствующего раздела ответа, поэтому HTTP 200 не означает,
-        что очередь пуста или снимок достиг требуемого блока. Read only читает журнал, не отправляя изменения.
-      responses:
-        '200':
-          description: Состояние после попытки синхронизации.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Synchronization'
+                $ref: '#/components/schemas/JournalStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -323,6 +366,8 @@ paths:
                 $ref: '#/components/schemas/Balances'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -343,6 +388,8 @@ paths:
                 $ref: '#/components/schemas/Successors'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -363,6 +410,8 @@ paths:
                 $ref: '#/components/schemas/Fund'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -385,6 +434,8 @@ paths:
                 $ref: '#/components/schemas/Shift'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -409,6 +460,8 @@ paths:
                 $ref: '#/components/schemas/ClaimPage'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -429,6 +482,8 @@ paths:
                 $ref: '#/components/schemas/Aave'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -452,6 +507,8 @@ paths:
                 $ref: '#/components/schemas/PositionPage'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -462,7 +519,7 @@ paths:
         - Операции
       operationId: listOperations
       summary: Прочитать историю заказов
-      description: Новые операции первыми. Статусы отражают состояние записанного журнала. До загрузки удалённой истории список может содержать только локальные записи восстановления; проверяйте journal.historyLoaded в GET /v1/sync.
+      description: Новые операции первыми. Статусы отражают состояние локального журнала, включая завершённые операции после перезапуска.
       parameters:
         - $ref: '#/components/parameters/Offset'
         - $ref: '#/components/parameters/Limit'
@@ -475,6 +532,8 @@ paths:
                 $ref: '#/components/schemas/OperationPage'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -506,6 +565,8 @@ paths:
                 $ref: '#/components/schemas/Operation'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
@@ -529,6 +590,8 @@ paths:
                 $ref: '#/components/schemas/Operation'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -720,6 +783,8 @@ paths:
                 $ref: '#/components/schemas/Preview'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -748,6 +813,8 @@ paths:
                 $ref: '#/components/schemas/Operation'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         default:
@@ -758,12 +825,14 @@ paths:
         - WebSocket
       operationId: subscribeOperations
       summary: Подписаться на состояния операций
-      description: 'Подключайтесь WebSocket-клиентом к ws://127.0.0.1:3000/v1/ws (wss для HTTPS). Swagger Try it out не выполняет WebSocket Upgrade. При подключении приходит {"type":"operations.snapshot","operations":[...]} с максимум 100 последними операциями. Далее — {"type":"operation.updated","operation":{...}} с полным объектом Operation. Принимайте только версии operation.version новее сохранённой. После переподключения приходит новый снимок; старые операции доступны через REST. Канал только для чтения: любое сообщение клиента закрывает соединение кодом 1008 READ_ONLY_CHANNEL. Ping каждые 30 секунд, требуется Pong. Медленный клиент закрывается кодом 1013 SLOW_CLIENT. Разрешён только Origin http://localhost или https://localhost на любом порту; запросы без Origin разрешены. URL должен быть ровно /v1/ws без query string.'
+      description: 'Подключайтесь WebSocket-клиентом к /v1/ws на настроенном домене (ws для HTTP, wss для HTTPS) после входа по PIN. Требуется cookie panel_session; проверяются Host и, при наличии, Origin. Swagger Try it out не выполняет WebSocket Upgrade. При подключении приходит {"type":"operations.snapshot","operations":[...]} с максимум 100 последними операциями. Далее — {"type":"operation.updated","operation":{...}} с полным объектом Operation. Принимайте только версии operation.version новее сохранённой. После переподключения приходит новый снимок; старые операции доступны через REST. Выход или истечение сессии закрывает соединение кодом 1008 AUTH_REQUIRED. Канал только для чтения: любое сообщение клиента закрывает соединение кодом 1008 READ_ONLY_CHANNEL. Ping каждые 30 секунд, требуется Pong. Медленный клиент закрывается кодом 1013 SLOW_CLIENT. URL должен быть ровно /v1/ws без query string.'
       responses:
         '101':
           description: WebSocket-соединение установлено; сообщения описаны схемами OperationsSnapshot и OperationUpdated.
+        '401':
+          description: Нет действующей сессии; WebSocket Upgrade отклонён без JSON. Обычный HTTP-запрос без сессии возвращает JSON с AUTH_REQUIRED.
         '403':
-          description: WebSocket Upgrade отклонён из-за Origin или неверного URL; ответ без JSON.
+          description: WebSocket Upgrade отклонён из-за Host, Origin или неверного URL; ответ без JSON и без разрешённого домена.
         '404':
           $ref: '#/components/responses/NotFound'
       x-websocket-messages:
@@ -771,6 +840,12 @@ paths:
           - $ref: '#/components/schemas/OperationsSnapshot'
           - $ref: '#/components/schemas/OperationUpdated'
 components:
+  securitySchemes:
+    PanelSession:
+      type: apiKey
+      in: cookie
+      name: panel_session
+      description: Сессия на 12 часов, полученная через POST /v1/session. Cookie устанавливает сервер; PIN в Authorize вводить не нужно.
   parameters:
     Offset:
       name: offset
@@ -806,6 +881,15 @@ components:
         type: string
         format: uuid
   responses:
+    Unauthorized:
+      description: Сессия отсутствует, истекла или отозвана; требуется вход по PIN.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: AUTH_REQUIRED
     BadRequest:
       description: Неверный запрос или прикладная ошибка; подробности в error.code, fields и reason.
       content:
@@ -818,14 +902,14 @@ components:
               fields:
                 - action.params.amount
     Forbidden:
-      description: Origin должен быть http://localhost или https://localhost на любом порту (ORIGIN_NOT_ALLOWED). Запись операций в режиме read only запрещена (READ_ONLY).
+      description: Host или Origin не соответствует настроенному домену (DOMAIN_NOT_ALLOWED); разрешённый домен не раскрывается в теле или заголовках. Запись операций в режиме read only запрещена (READ_ONLY).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
           example:
             error:
-              code: ORIGIN_NOT_ALLOWED
+              code: DOMAIN_NOT_ALLOWED
     Conflict:
       description: IDEMPOTENCY_CONFLICT или PREVIEW_ALREADY_SUBMITTED.
       content:
@@ -859,16 +943,14 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
-    PublicServerUnavailable:
-      description: Основной сервер недоступен, не завершил первую синхронизацию или отсутствует необходимый ключ API.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          example:
-            error:
-              code: PUBLIC_SERVER_UNAVAILABLE
   schemas:
+    SessionStatus:
+      type: object
+      required:
+        - authenticated
+      properties:
+        authenticated:
+          type: boolean
     Decimal:
       type: string
       minLength: 1
@@ -1976,8 +2058,7 @@ components:
         - tokens
         - previewTtlSeconds
         - websocket
-        - state
-        - synchronization
+        - journal
       properties:
         chainId:
           type: integer
@@ -2025,216 +2106,20 @@ components:
           type: string
           enum:
             - /v1/ws
-        state:
+        journal:
           type: string
           enum:
-            - /v1/state
-        synchronization:
-          type: string
-          enum:
-            - /v1/sync
-    PublicBlock:
-      type: object
-      required:
-        - number
-        - hash
-        - timestamp
-      properties:
-        number:
-          type: integer
-          minimum: 0
-        hash:
-          $ref: '#/components/schemas/Hash'
-        timestamp:
-          $ref: '#/components/schemas/UnixSeconds'
-    PublicSnapshot:
-      type: object
-      description: |
-        Исходный снимок GET /v1/state основного сервера, без преобразования в текущие RPC-данные.
-        fund содержит magicOre, oreVein и freeMine; portfolio содержит nativeBalance, balances, aave и uniswap.
-        Суммы — строки минимальных единиц, цены Uniswap и healthFactor — обычные десятичные строки.
-        Набор сохраняемых смен и пар определяется основным сервером; снимок может не содержать всех исторических смен и NFT.
-        Полные вложенные схемы опубликованы в OpenAPI основного сервера.
-      externalDocs:
-        description: Формат PublicSnapshot основного сервера
-        url: https://free-mine.github.io/server/
-      required:
-        - format
-        - chain
-        - block
-        - updatedAt
-        - fund
-        - portfolio
-      properties:
-        format:
-          type: integer
-          enum:
-            - 1
-        chain:
-          type: object
-          required:
-            - chainId
-            - deploymentTx
-            - magicOre
-            - freeMine
-            - oreVein
-          properties:
-            chainId:
-              type: integer
-              enum:
-                - 43114
-            deploymentTx:
-              $ref: '#/components/schemas/Hash'
-            magicOre:
-              $ref: '#/components/schemas/Address'
-            freeMine:
-              $ref: '#/components/schemas/Address'
-            oreVein:
-              $ref: '#/components/schemas/Address'
-        block:
-          $ref: '#/components/schemas/PublicBlock'
-        updatedAt:
-          type: string
-          format: date-time
-        fund:
-          type: object
-          required:
-            - magicOre
-            - oreVein
-            - freeMine
-          properties:
-            magicOre:
-              type: object
-              additionalProperties: true
-            oreVein:
-              type: object
-              additionalProperties: true
-            freeMine:
-              type: object
-              additionalProperties: true
-        portfolio:
-          type: object
-          required:
-            - blockNumber
-            - nativeBalance
-            - balances
-            - aave
-            - uniswap
-          properties:
-            blockNumber:
-              type: integer
-              description: Совпадает с block.number.
-            nativeBalance:
-              type: object
-              additionalProperties: true
-            balances:
-              type: array
-              items:
-                type: object
-                additionalProperties: true
-            aave:
-              type: object
-              additionalProperties: true
-            uniswap:
-              type: object
-              additionalProperties: true
-    PublicStateView:
-      type: object
-      required:
-        - source
-        - cached
-        - ageSeconds
-        - behindConfirmedTransactions
-        - snapshot
-      properties:
-        source:
-          type: string
-          enum:
-            - public-server
-        cached:
-          type: boolean
-          description: Последняя попытка чтения снимка неуспешна; возвращён снимок из памяти. Ошибка отдельного запроса refresh не делает успешно прочитанный снимок кешированным.
-        ageSeconds:
-          type: integer
-          minimum: 0
-          description: Возраст блока снимка в секундах относительно времени управляющего.
-        behindConfirmedTransactions:
-          type: boolean
-          description: Блок снимка меньше максимального известного блока receipt; управляющий продолжает запрашивать обновление.
-        snapshot:
-          $ref: '#/components/schemas/PublicSnapshot'
-    PublicStateStatus:
-      type: object
-      required:
-        - available
-        - snapshotBlock
-        - requiredBlock
-        - refreshPending
-        - lastCheckedAt
-        - lastError
-      properties:
-        available:
-          type: boolean
-          description: Последнее чтение снимка успешно. Ошибка запроса refresh отражается в lastError, но не меняет доступность чтения.
-        snapshotBlock:
-          type: integer
-          nullable: true
-          description: Блок последнего загруженного снимка; null до первого снимка.
-        requiredBlock:
-          type: integer
-          nullable: true
-          description: Минимальный номер блока по известным receipts; null, если подтверждённые операции ещё неизвестны.
-        refreshPending:
-          type: boolean
-          description: Снимок ещё не достиг requiredBlock. Это признак отставания, а не статус фонового процесса основного сервера.
-        lastCheckedAt:
-          type: integer
-          format: int64
-          nullable: true
-          description: Unix milliseconds окончания последней попытки; null до первой попытки.
-        lastError:
-          type: object
-          nullable: true
-          required:
-            - code
-          properties:
-            code:
-              type: string
-            reason:
-              type: string
+            - /v1/journal
     JournalStatus:
       type: object
       required:
-        - connected
-        - pending
         - blocked
-        - historyLoaded
       properties:
-        connected:
-          type: boolean
-          description: Последняя попытка синхронизации журнала успешно обратилась к основному серверу.
-        pending:
-          type: integer
-          minimum: 0
-          description: Число операций с изменениями, ещё не подтверждёнными основным сервером.
         blocked:
           type: boolean
-          description: Исполнение заблокировано из-за конфликта или некорректных данных журнала; локальная очередь сохранена для разбора.
-        historyLoaded:
-          type: boolean
-          description: Полная история владельца хотя бы раз загружена с основного сервера в этом процессе. false означает, что доступные локальные записи могут быть неполными.
+          description: Исполнение остановлено из-за ошибки сохранения журнала.
         lastError:
           $ref: '#/components/schemas/PublicError'
-    Synchronization:
-      type: object
-      required:
-        - journal
-        - state
-      properties:
-        journal:
-          $ref: '#/components/schemas/JournalStatus'
-        state:
-          $ref: '#/components/schemas/PublicStateStatus'
     Balances:
       type: object
       required:

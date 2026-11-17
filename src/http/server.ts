@@ -2,6 +2,7 @@ import Fastify from 'fastify'
 import { z, ZodError } from 'zod'
 import { WebSocket, WebSocketServer } from 'ws'
 
+import { Access } from './access.js'
 import type { Services } from './types.js'
 import { previewView } from '../operations/index.js'
 import { AppError, publicError } from '../shared/index.js'
@@ -16,32 +17,9 @@ import {
   previewRequestSchema,
 } from '../requests/index.js'
 
-function allowedOrigin(origin?: string): boolean {
-  if (origin === undefined) {
-    return true
-  }
-  try {
-    const url = new URL(origin)
-    return (
-      (url.protocol === 'http:' || url.protocol === 'https:') &&
-      url.hostname === 'localhost' &&
-      url.origin === origin
-    )
-  } catch {
-    return false
-  }
-}
-
 export function createServer(services: Services) {
-  const {
-    config,
-    chain,
-    operations,
-    previews,
-    successors,
-    journal,
-    publicState,
-  } = services
+  const { config, chain, operations, previews, successors, journal } = services
+  const access = new Access(config.allowedDomain, config.panelPin)
   // Не логируем тела запросов, заголовки и исключения ethers с RPC URL.
   const app = Fastify({
     logger: false,
@@ -50,18 +28,25 @@ export function createServer(services: Services) {
     forceCloseConnections: true,
   })
   app.addHook('onRequest', async (request, reply) => {
-    if (!allowedOrigin(request.headers.origin)) {
-      throw new AppError('ORIGIN_NOT_ALLOWED', 403)
+    reply.header('Cache-Control', 'no-store')
+    if (!access.allows(request.headers)) {
+      throw new AppError('DOMAIN_NOT_ALLOWED', 403)
     }
     if (request.headers.origin) {
       reply.header('Access-Control-Allow-Origin', request.headers.origin)
       reply.header('Vary', 'Origin')
       reply.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
       reply.header('Access-Control-Allow-Headers', 'Content-Type')
+      reply.header('Access-Control-Allow-Credentials', 'true')
     }
-    reply.header('Cache-Control', 'no-store')
     if (request.method === 'OPTIONS') {
       return reply.status(204).send()
+    }
+    if (
+      request.routeOptions.config.public !== true &&
+      !access.session(request.headers.cookie)
+    ) {
+      throw new AppError('AUTH_REQUIRED', 401)
     }
   })
   app.setErrorHandler((error, _request, reply) => {
@@ -89,7 +74,39 @@ export function createServer(services: Services) {
     reply.status(404).send({ error: { code: 'NOT_FOUND' } }),
   )
 
-  app.get('/health', async () => ({ status: 'ok' }))
+  app.get('/health', { config: { public: true } }, async () => ({
+    status: 'ok',
+  }))
+  app.get('/v1/session', { config: { public: true } }, async request => ({
+    authenticated: !!access.session(request.headers.cookie),
+  }))
+  app.post(
+    '/v1/session',
+    { config: { public: true } },
+    async (request, reply) => {
+      const { pin } = z.object({ pin: z.string().max(32) }).parse(request.body)
+      const session = access.login(pin, request.headers.cookie)
+      closeUnauthorizedSockets()
+      const secure =
+        request.protocol === 'https' ||
+        request.headers.origin?.startsWith('https://') === true
+      reply.header('Set-Cookie', access.cookie(session, secure))
+      return { authenticated: true }
+    },
+  )
+  app.post(
+    '/v1/session/logout',
+    { config: { public: true } },
+    async (request, reply) => {
+      access.logout(request.headers.cookie)
+      closeUnauthorizedSockets()
+      const secure =
+        request.protocol === 'https' ||
+        request.headers.origin?.startsWith('https://') === true
+      reply.header('Set-Cookie', access.cookie(undefined, secure))
+      return { authenticated: false }
+    },
+  )
   app.get('/ready', async (_request, reply) => {
     if (operations.fatal) {
       return reply
@@ -117,21 +134,9 @@ export function createServer(services: Services) {
     tokens,
     previewTtlSeconds: config.previewTtlSeconds,
     websocket: '/v1/ws',
-    state: '/v1/state',
-    synchronization: '/v1/sync',
+    journal: '/v1/journal',
   }))
-  app.get('/v1/state', async () => publicState.read())
-  app.post('/v1/state/refresh', async (_request, reply) =>
-    reply.status(202).send(await publicState.refresh()),
-  )
-  app.get('/v1/sync', async () => ({
-    journal: journal.status,
-    state: publicState.status,
-  }))
-  app.post('/v1/sync', async () => {
-    await Promise.all([journal.sync(), publicState.sync()])
-    return { journal: journal.status, state: publicState.status }
-  })
+  app.get('/v1/journal', async () => journal.status)
   app.get('/v1/balances', async () => chain.balances())
   app.get('/v1/successors', async () => successors.read())
   app.get('/v1/fund', async () => readFund(chain))
@@ -155,8 +160,8 @@ export function createServer(services: Services) {
     return reply.status(201).send(previewView(preview))
   })
   app.post('/v1/operations', async (request, reply) => {
-    await chain.assertOwner()
     const input = submitSchema.parse(request.body)
+    await chain.assertOwner()
     const existing = operations.existing(input.requestId, input.previewId)
     if (existing) {
       return reply.send(existing)
@@ -190,8 +195,20 @@ export function createServer(services: Services) {
     perMessageDeflate: false,
   })
   const alive = new WeakSet<WebSocket>()
+  const socketSessions = new WeakMap<WebSocket, string>()
+  const closeUnauthorizedSockets = () => {
+    for (const socket of sockets.clients) {
+      if (!access.get(socketSessions.get(socket) ?? '')) {
+        socket.close(1008, 'AUTH_REQUIRED')
+      }
+    }
+  }
   const send = (socket: WebSocket, value: unknown) => {
     if (socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+    if (!access.get(socketSessions.get(socket) ?? '')) {
+      socket.close(1008, 'AUTH_REQUIRED')
       return
     }
     if (socket.bufferedAmount > 1024 * 1024) {
@@ -201,14 +218,27 @@ export function createServer(services: Services) {
     socket.send(JSON.stringify(value))
   }
   app.server.on('upgrade', (request, socket, head) => {
-    if (request.url !== '/v1/ws' || !allowedOrigin(request.headers.origin)) {
+    if (request.url !== '/v1/ws' || !access.allows(request.headers)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
       socket.destroy()
       return
     }
-    sockets.handleUpgrade(request, socket, head, connection =>
-      sockets.emit('connection', connection),
-    )
+    const session = access.session(request.headers.cookie)
+    if (!session) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    sockets.handleUpgrade(request, socket, head, connection => {
+      socketSessions.set(connection, session.token)
+      const expires = setTimeout(
+        () => connection.close(1008, 'AUTH_REQUIRED'),
+        Math.max(0, session.expiresAt - Date.now()),
+      )
+      expires.unref()
+      connection.once('close', () => clearTimeout(expires))
+      sockets.emit('connection', connection)
+    })
   })
   sockets.on('connection', socket => {
     alive.add(socket)
@@ -227,6 +257,7 @@ export function createServer(services: Services) {
     }
   })
   const heartbeat = setInterval(() => {
+    closeUnauthorizedSockets()
     for (const socket of sockets.clients) {
       if (!alive.has(socket)) {
         socket.terminate()

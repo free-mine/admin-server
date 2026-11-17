@@ -23,7 +23,6 @@ export class Operations {
   private task?: Promise<void>
   private listeners = new Set<(operation: OperationView) => void>()
   private failed = false
-  private unsubscribeJournal?: () => void
 
   constructor(
     private readonly journal: Journal,
@@ -39,14 +38,11 @@ export class Operations {
     }
     this.abort = new AbortController()
     this.stopped = false
-    this.unsubscribeJournal ??= this.journal.subscribe(() => this.kick())
     this.kick()
   }
   async stop(): Promise<void> {
     this.stopped = true
     this.abort.abort()
-    this.unsubscribeJournal?.()
-    this.unsubscribeJournal = undefined
     await this.task
   }
   subscribe(listener: (operation: OperationView) => void): () => void {
@@ -57,7 +53,8 @@ export class Operations {
     return this.journal.all().length
   }
   list(offset = 0, limit = 20): OperationView[] {
-    return [...this.journal.all()]
+    return this.journal
+      .all()
       .reverse()
       .slice(offset, offset + limit)
       .map(operationView)
@@ -91,13 +88,12 @@ export class Operations {
     }
     ensure(!this.fatal && !this.stopped, 'SERVICE_NOT_READY')
     ensure(preview.expiresAt > Date.now(), 'PREVIEW_EXPIRED')
-    if (
-      this.journal.all().some(operation => operation.previewId === preview.id)
-    ) {
+    const operations = this.journal.all()
+    if (operations.some(operation => operation.previewId === preview.id)) {
       throw new AppError('PREVIEW_ALREADY_SUBMITTED', 409)
     }
     ensure(
-      this.journal.all().filter(operation => !terminal(operation)).length < 50,
+      operations.filter(operation => !terminal(operation)).length < 50,
       'QUEUE_FULL',
     )
     const operation: Operation = {
